@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+config.yaml
+output/
+speaker_profiles/*.json
+*.m4a
+*.wav
+*.mp3
+.claude/

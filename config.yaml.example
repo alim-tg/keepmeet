@@ -1,0 +1,14 @@
+confluence:
+  base_url: https://yourcompany.atlassian.net
+  space_key: "TEAM"
+  parent_page_id: null
+
+whisper:
+  model: medium
+  compute_type: int8
+  batch_size: 4
+  language: null
+
+speakers:
+  profiles_dir: ./speaker_profiles
+  default_profile: default.json
