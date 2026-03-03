@@ -1,6 +1,7 @@
 import dataclasses
 import gc
 import os
+import re
 import shutil
 import threading
 from collections import Counter
@@ -8,7 +9,16 @@ from collections import Counter
 from .config import Config
 
 SAMPLE_RATE = 16000
-CHUNK_DURATION = 120
+CHUNK_DURATION = 30
+
+ASR_OPTIONS = {
+    "repetition_penalty": 1.2,
+    "no_repeat_ngram_size": 3,
+    "compression_ratio_threshold": 2.0,
+    "log_prob_threshold": -0.8,
+    "hallucination_silence_threshold": 2.0,
+    "condition_on_previous_text": False,
+}
 
 
 def _ensure_ffmpeg():
@@ -54,6 +64,7 @@ def transcribe_audio(
             config.whisper_model,
             device,
             compute_type=config.compute_type,
+            asr_options=ASR_OPTIONS,
         )
         if config.language:
             result = model.transcribe(
@@ -70,6 +81,7 @@ def transcribe_audio(
                 config.whisper_model,
                 device,
                 compute_type=config.compute_type,
+                asr_options=ASR_OPTIONS,
             )
             if config.language:
                 result = model.transcribe(
@@ -88,6 +100,7 @@ def transcribe_audio(
         raise TranscriptionError(f"Transcription failed: {e}") from e
 
     languages_used = result.get("_languages", [result["language"]])
+    result["segments"] = _remove_hallucinations(result["segments"])
     del model
     _cleanup_cuda()
 
@@ -172,6 +185,51 @@ def _chunked_transcribe(model, audio, batch_size):
         "language": primary_lang,
         "_languages": languages,
     }
+
+
+def _remove_hallucinations(segments: list[dict]) -> list[dict]:
+    cleaned = []
+    for seg in segments:
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+        if _is_repetitive(text):
+            trimmed = _trim_repetition(text)
+            if trimmed:
+                seg = {**seg, "text": trimmed}
+                cleaned.append(seg)
+            continue
+        cleaned.append(seg)
+    return cleaned
+
+
+def _is_repetitive(text: str) -> bool:
+    words = text.split()
+    if len(words) < 6:
+        return False
+    for ngram_size in range(2, 6):
+        ngrams = [" ".join(words[i:i + ngram_size]) for i in range(len(words) - ngram_size + 1)]
+        if not ngrams:
+            continue
+        most_common_count = Counter(ngrams).most_common(1)[0][1]
+        if most_common_count >= 4 and most_common_count / len(ngrams) > 0.3:
+            return True
+    return False
+
+
+def _trim_repetition(text: str) -> str:
+    match = re.search(r"(.{4,}?)\1{3,}", text)
+    if match:
+        return text[:match.start()] + match.group(1)
+    words = text.split()
+    for ngram_size in range(2, 6):
+        ngrams = [" ".join(words[i:i + ngram_size]) for i in range(len(words) - ngram_size + 1)]
+        counts = Counter(ngrams)
+        repeated, count = counts.most_common(1)[0]
+        if count >= 4:
+            first_idx = next(i for i in range(len(words) - ngram_size + 1) if " ".join(words[i:i + ngram_size]) == repeated)
+            return " ".join(words[:first_idx + ngram_size])
+    return text
 
 
 def _align_with_timeout(result, languages_used, audio, device, timeout=120):
