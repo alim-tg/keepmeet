@@ -12,6 +12,9 @@ dependencies = [
     "requests>=2.31",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]

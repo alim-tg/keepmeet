@@ -1,0 +1,133 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #09090b;
+  --color-foreground: #fafafa;
+  --color-card: rgba(255, 255, 255, 0.03);
+  --color-card-foreground: #fafafa;
+  --color-popover: #18181b;
+  --color-popover-foreground: #fafafa;
+  --color-primary: #a78bfa;
+  --color-primary-foreground: #09090b;
+  --color-secondary: rgba(255, 255, 255, 0.06);
+  --color-secondary-foreground: #fafafa;
+  --color-muted: rgba(255, 255, 255, 0.06);
+  --color-muted-foreground: #a1a1aa;
+  --color-accent: rgba(167, 139, 250, 0.12);
+  --color-accent-foreground: #e4d4fc;
+  --color-destructive: #ef4444;
+  --color-destructive-foreground: #fafafa;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-input: rgba(255, 255, 255, 0.08);
+  --color-ring: #a78bfa;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --color-glow: rgba(167, 139, 250, 0.15);
+  --color-glow-strong: rgba(167, 139, 250, 0.3);
+  --color-gradient-from: #a78bfa;
+  --color-gradient-to: #6366f1;
+  --color-surface: rgba(255, 255, 255, 0.02);
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-4px); }
+}
+
+@utility animate-fade-in {
+  animation: fade-in 0.4s ease-out both;
+}
+
+@utility animate-shimmer {
+  animation: shimmer 2s linear infinite;
+  background-size: 200% 100%;
+}
+
+@utility animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@utility animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100vh;
+  position: relative;
+}
+
+#root::before {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(ellipse at 20% 20%, rgba(167, 139, 250, 0.06) 0%, transparent 50%),
+              radial-gradient(ellipse at 80% 80%, rgba(99, 102, 241, 0.04) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.prose {
+  color: #d4d4d8;
+  line-height: 1.75;
+}
+.prose h1, .prose h2, .prose h3 {
+  color: #fafafa;
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+.prose h2 { font-size: 1.25rem; }
+.prose h3 { font-size: 1.1rem; }
+.prose ul {
+  list-style: disc;
+  padding-left: 1.5em;
+}
+.prose li {
+  margin: 0.25em 0;
+}
+.prose strong {
+  color: #fafafa;
+}
+.prose code {
+  background: rgba(255,255,255,0.06);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+.prose p {
+  margin: 0.75em 0;
+}

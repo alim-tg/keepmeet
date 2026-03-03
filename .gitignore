@@ -10,4 +10,7 @@ speaker_profiles/*.json
 *.m4a
 *.wav
 *.mp3
+data/
+frontend/node_modules/
+frontend/dist/
 .claude/
