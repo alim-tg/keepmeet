@@ -10,6 +10,7 @@ from .config import Config
 
 SAMPLE_RATE = 16000
 CHUNK_DURATION = 30
+CHUNK_PAD = 5
 
 ASR_OPTIONS = {
     "repetition_penalty": 1.2,
@@ -142,15 +143,23 @@ EXPECTED_LANGUAGES = {"ru", "en"}
 
 def _chunked_transcribe(model, audio, batch_size):
     chunk_samples = CHUNK_DURATION * SAMPLE_RATE
+    pad_samples = CHUNK_PAD * SAMPLE_RATE
     total = len(audio)
     all_segments = []
     languages = []
     prev_lang = None
 
-    for start in range(0, total, chunk_samples):
-        end = min(start + chunk_samples, total)
-        chunk = audio[start:end]
-        offset = start / SAMPLE_RATE
+    for logical_start in range(0, total, chunk_samples):
+        logical_end = min(logical_start + chunk_samples, total)
+        is_last = logical_end >= total
+
+        feed_start = max(0, logical_start - pad_samples)
+        feed_end = min(total, logical_end + pad_samples)
+        chunk = audio[feed_start:feed_end]
+        feed_offset = feed_start / SAMPLE_RATE
+
+        own_start = logical_start / SAMPLE_RATE
+        own_end = logical_end / SAMPLE_RATE
 
         chunk_result = model.transcribe(chunk, batch_size=batch_size)
         detected = chunk_result["language"]
@@ -167,15 +176,20 @@ def _chunked_transcribe(model, audio, batch_size):
         languages.append(lang)
 
         for seg in chunk_result["segments"]:
-            seg["start"] = seg.get("start", 0) + offset
-            seg["end"] = seg.get("end", 0) + offset
+            seg_start = seg.get("start", 0) + feed_offset
+            seg_end = seg.get("end", 0) + feed_offset
+            seg_mid = (seg_start + seg_end) / 2
+            if seg_mid < own_start or (not is_last and seg_mid >= own_end):
+                continue
+            seg["start"] = seg_start
+            seg["end"] = seg_end
             seg["_lang"] = lang
             if "words" in seg:
                 for w in seg["words"]:
                     if "start" in w:
-                        w["start"] += offset
+                        w["start"] += feed_offset
                     if "end" in w:
-                        w["end"] += offset
+                        w["end"] += feed_offset
             all_segments.append(seg)
 
     primary_lang = Counter(languages).most_common(1)[0][0]

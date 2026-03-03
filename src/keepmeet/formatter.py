@@ -30,7 +30,7 @@ def format_with_claude(raw_transcript: str, meeting_date: str) -> str:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=120,
+            timeout=300,
             env=env,
         )
     except FileNotFoundError:
@@ -38,7 +38,7 @@ def format_with_claude(raw_transcript: str, meeting_date: str) -> str:
             "claude CLI not found. Install Claude Code: https://claude.ai/code"
         )
     except subprocess.TimeoutExpired:
-        raise FormatterError("Claude CLI timed out after 120 seconds")
+        raise FormatterError("Claude CLI timed out after 300 seconds")
 
     if proc.returncode != 0:
         raise FormatterError(
