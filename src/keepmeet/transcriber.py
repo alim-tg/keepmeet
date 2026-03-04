@@ -3,23 +3,17 @@ import gc
 import os
 import re
 import shutil
-import threading
+import subprocess
+import tempfile
 from collections import Counter
+
+import requests
 
 from .config import Config
 
-SAMPLE_RATE = 16000
-CHUNK_DURATION = 30
-CHUNK_PAD = 5
-
-ASR_OPTIONS = {
-    "repetition_penalty": 1.2,
-    "no_repeat_ngram_size": 3,
-    "compression_ratio_threshold": 2.0,
-    "log_prob_threshold": -0.8,
-    "hallucination_silence_threshold": 2.0,
-    "condition_on_previous_text": False,
-}
+CHUNK_DURATION = 60
+CHUNK_PAD_LEAD = 5
+CHUNK_PAD_TRAIL = 30
 
 
 def _ensure_ffmpeg():
@@ -43,12 +37,155 @@ class TranscriptResult:
     language: str
 
 
+def _attach_words_to_segments(segments: list[dict], words: list[dict]):
+    for seg in segments:
+        seg_start = seg.get("start", 0)
+        seg_end = seg.get("end", 0)
+        seg["words"] = [
+            w for w in words
+            if w.get("start", 0) >= seg_start - 0.01
+            and w.get("end", 0) <= seg_end + 0.01
+        ]
+
+
+def _get_audio_duration(audio_path: str) -> float:
+    result = subprocess.run(
+        ["ffmpeg", "-i", audio_path, "-f", "null", "-"],
+        capture_output=True, text=True, timeout=60,
+    )
+    import re as _re
+    match = _re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", result.stderr)
+    if not match:
+        raise TranscriptionError("Could not determine audio duration")
+    h, m, s, cs = int(match[1]), int(match[2]), int(match[3]), int(match[4])
+    return h * 3600 + m * 60 + s + cs / 100
+
+
+def _extract_chunk(audio_path: str, start: float, duration: float, out_path: str):
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", audio_path, "-ss", str(start), "-t", str(duration),
+         "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", out_path],
+        capture_output=True, timeout=60,
+    )
+
+
+def _transcribe_deepinfra_chunk(chunk_path: str, config: Config, language: str | None = None) -> dict:
+    data = {"chunk_level": "word"}
+    if language:
+        data["language"] = language
+    with open(chunk_path, "rb") as f:
+        resp = requests.post(
+            "https://api.deepinfra.com/v1/inference/openai/whisper-large-v3-turbo",
+            headers={"Authorization": f"bearer {config.deepinfra_api_key}"},
+            files={"audio": f},
+            data=data,
+            timeout=600,
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _flip_language(lang: str) -> str:
+    if lang in ("ru", "uk", "be"):
+        return "en"
+    return "ru"
+
+
+def _chunk_looks_hallucinated(data: dict) -> bool:
+    text = " ".join(s.get("text", "") for s in data.get("segments", []))
+    if _is_repetitive(text):
+        return True
+    words = text.split()
+    if len(words) < 5:
+        return False
+    latin = sum(1 for c in text if c.isalpha() and ord(c) < 0x0250)
+    cyrillic = sum(1 for c in text if '\u0400' <= c <= '\u04FF')
+    total = latin + cyrillic
+    if total < 20:
+        return False
+    lang = data.get("language", "en")
+    if lang in ("ru", "uk", "be") and latin / total > 0.5:
+        return True
+    if lang == "en" and cyrillic / total > 0.3:
+        return True
+    return False
+
+
+def _transcribe_chunk_with_retry(chunk_path: str, config: Config) -> dict:
+    data = _transcribe_deepinfra_chunk(chunk_path, config)
+    if _chunk_looks_hallucinated(data):
+        forced_lang = _flip_language(data.get("language", "en"))
+        retry = _transcribe_deepinfra_chunk(chunk_path, config, language=forced_lang)
+        if not _chunk_looks_hallucinated(retry):
+            return retry
+    return data
+
+
+def _transcribe_deepinfra(audio_path: str, config: Config):
+    _ensure_ffmpeg()
+    total_duration = _get_audio_duration(audio_path)
+
+    if total_duration <= CHUNK_DURATION + CHUNK_PAD_TRAIL:
+        data = _transcribe_chunk_with_retry(audio_path, config)
+        segments = data.get("segments", [])
+        words = data.get("words", [])
+        _attach_words_to_segments(segments, words)
+        return segments, data.get("language", "en")
+
+    all_segments = []
+    languages = []
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        logical_start = 0.0
+        while logical_start < total_duration:
+            logical_end = min(logical_start + CHUNK_DURATION, total_duration)
+
+            feed_start = max(0.0, logical_start - CHUNK_PAD_LEAD)
+            feed_end = min(total_duration, logical_end + CHUNK_PAD_TRAIL)
+            feed_duration = feed_end - feed_start
+
+            own_start = logical_start
+            own_end = logical_end
+            is_last = logical_end >= total_duration
+
+            chunk_path = os.path.join(tmp_dir, f"chunk_{int(logical_start)}.wav")
+            _extract_chunk(audio_path, feed_start, feed_duration, chunk_path)
+
+            data = _transcribe_chunk_with_retry(chunk_path, config)
+            languages.append(data.get("language", "en"))
+
+            new_seg_idx = len(all_segments)
+
+            for seg in data.get("segments", []):
+                seg_start = seg.get("start", 0) + feed_start
+                seg_end = seg.get("end", 0) + feed_start
+                seg_mid = (seg_start + seg_end) / 2
+                if seg_mid < own_start or (not is_last and seg_mid >= own_end):
+                    continue
+                seg["start"] = seg_start
+                seg["end"] = seg_end
+                all_segments.append(seg)
+
+            for w in data.get("words", []):
+                if "start" in w:
+                    w["start"] += feed_start
+                if "end" in w:
+                    w["end"] += feed_start
+
+            chunk_words = data.get("words", [])
+            _attach_words_to_segments(all_segments[new_seg_idx:], chunk_words)
+
+            logical_start = logical_end
+
+    primary_lang = Counter(languages).most_common(1)[0][0]
+    return all_segments, primary_lang
+
+
 def transcribe_audio(
     audio_path: str, config: Config, on_stage=None
 ) -> TranscriptResult:
     _ensure_ffmpeg()
     import torch
-    import whisperx
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -56,149 +193,178 @@ def transcribe_audio(
         on_stage("transcribing")
 
     try:
-        audio = whisperx.load_audio(audio_path)
-    except Exception as e:
-        raise TranscriptionError(f"Failed to load audio: {e}") from e
-
-    try:
-        model = whisperx.load_model(
-            config.whisper_model,
-            device,
-            compute_type=config.compute_type,
-            asr_options=ASR_OPTIONS,
-        )
-        if config.language:
-            result = model.transcribe(
-                audio,
-                batch_size=config.batch_size,
-                language=config.language,
-            )
-        else:
-            result = _chunked_transcribe(model, audio, config.batch_size)
-    except torch.cuda.OutOfMemoryError:
-        _cleanup_cuda()
-        try:
-            model = whisperx.load_model(
-                config.whisper_model,
-                device,
-                compute_type=config.compute_type,
-                asr_options=ASR_OPTIONS,
-            )
-            if config.language:
-                result = model.transcribe(
-                    audio,
-                    batch_size=1,
-                    language=config.language,
-                )
-            else:
-                result = _chunked_transcribe(model, audio, 1)
-        except torch.cuda.OutOfMemoryError:
-            raise TranscriptionError(
-                "Out of GPU memory even with batch_size=1. "
-                "Try a smaller model (e.g. 'small') or use CPU."
-            )
+        segments, language = _transcribe_deepinfra(audio_path, config)
+    except requests.HTTPError as e:
+        raise TranscriptionError(f"DeepInfra API error: {e}") from e
     except Exception as e:
         raise TranscriptionError(f"Transcription failed: {e}") from e
 
-    languages_used = result.get("_languages", [result["language"]])
-    result["segments"] = _remove_hallucinations(result["segments"])
-    del model
-    _cleanup_cuda()
-
-    if on_stage:
-        on_stage("aligning")
-
-    try:
-        aligned = _align_with_timeout(result, languages_used, audio, device, timeout=120)
-        if aligned is not None:
-            result = aligned
-    except Exception:
-        pass
+    segments = _remove_hallucinations(segments)
 
     if on_stage:
         on_stage("diarizing")
 
     try:
+        import whisperx
         from whisperx.diarize import DiarizationPipeline
-        diarize_model = DiarizationPipeline(
-            token=config.hf_token, device=device
-        )
-        diarize_segments = diarize_model(audio)
-        result = whisperx.assign_word_speakers(diarize_segments, result)
+
+        audio = whisperx.load_audio(audio_path)
+        diarize_model = DiarizationPipeline(token=config.hf_token, device=device)
+        diarize_df = diarize_model(audio)
+
+        transcript_dict = {"segments": segments}
+        result = whisperx.assign_word_speakers(diarize_df, transcript_dict)
+        segments = _regroup_by_speaker(result["segments"])
+
         del diarize_model
         _cleanup_cuda()
     except Exception as e:
         raise TranscriptionError(f"Diarization failed: {e}") from e
 
-    primary_lang = Counter(languages_used).most_common(1)[0][0]
+    segments = _clean_script_tails(segments)
 
     return TranscriptResult(
-        segments=result["segments"],
-        language=primary_lang,
+        segments=segments,
+        language=language,
     )
 
 
-EXPECTED_LANGUAGES = {"ru", "en"}
-
-
-def _chunked_transcribe(model, audio, batch_size):
-    chunk_samples = CHUNK_DURATION * SAMPLE_RATE
-    pad_samples = CHUNK_PAD * SAMPLE_RATE
-    total = len(audio)
-    all_segments = []
-    languages = []
-    prev_lang = None
-
-    for logical_start in range(0, total, chunk_samples):
-        logical_end = min(logical_start + chunk_samples, total)
-        is_last = logical_end >= total
-
-        feed_start = max(0, logical_start - pad_samples)
-        feed_end = min(total, logical_end + pad_samples)
-        chunk = audio[feed_start:feed_end]
-        feed_offset = feed_start / SAMPLE_RATE
-
-        own_start = logical_start / SAMPLE_RATE
-        own_end = logical_end / SAMPLE_RATE
-
-        chunk_result = model.transcribe(chunk, batch_size=batch_size)
-        detected = chunk_result["language"]
-
-        if detected not in EXPECTED_LANGUAGES and prev_lang:
-            lang = prev_lang
-            chunk_result = model.transcribe(
-                chunk, batch_size=batch_size, language=lang
-            )
-        else:
-            lang = detected
-
-        prev_lang = lang
-        languages.append(lang)
-
-        for seg in chunk_result["segments"]:
-            seg_start = seg.get("start", 0) + feed_offset
-            seg_end = seg.get("end", 0) + feed_offset
-            seg_mid = (seg_start + seg_end) / 2
-            if seg_mid < own_start or (not is_last and seg_mid >= own_end):
+def _regroup_by_speaker(segments: list[dict]) -> list[dict]:
+    all_words = []
+    for seg in segments:
+        seg_speaker = seg.get("speaker")
+        for w in seg.get("words", []):
+            if "start" not in w:
                 continue
-            seg["start"] = seg_start
-            seg["end"] = seg_end
-            seg["_lang"] = lang
-            if "words" in seg:
-                for w in seg["words"]:
-                    if "start" in w:
-                        w["start"] += feed_offset
-                    if "end" in w:
-                        w["end"] += feed_offset
-            all_segments.append(seg)
+            if not w.get("speaker") and seg_speaker:
+                w["speaker"] = seg_speaker
+            if w.get("speaker"):
+                all_words.append(w)
+    if not all_words:
+        return segments
 
-    primary_lang = Counter(languages).most_common(1)[0][0]
+    all_words.sort(key=lambda w: w["start"])
 
-    return {
-        "segments": all_segments,
-        "language": primary_lang,
-        "_languages": languages,
-    }
+    deduped = [all_words[0]]
+    for w in all_words[1:]:
+        if w["start"] - deduped[-1]["start"] < 0.1:
+            continue
+        deduped.append(w)
+    all_words = deduped
+
+    result = []
+    cur_spk = all_words[0]["speaker"]
+    cur_words = [all_words[0]]
+
+    for w in all_words[1:]:
+        if w.get("speaker") == cur_spk:
+            cur_words.append(w)
+        else:
+            text = " ".join(
+                (x.get("word") or x.get("text", "")).strip() for x in cur_words
+            ).strip()
+            if text:
+                result.append({
+                    "speaker": cur_spk,
+                    "start": cur_words[0]["start"],
+                    "end": cur_words[-1].get("end", cur_words[-1]["start"]),
+                    "text": text,
+                })
+            cur_spk = w["speaker"]
+            cur_words = [w]
+
+    text = " ".join(
+        (x.get("word") or x.get("text", "")).strip() for x in cur_words
+    ).strip()
+    if text:
+        result.append({
+            "speaker": cur_spk,
+            "start": cur_words[0]["start"],
+            "end": cur_words[-1].get("end", cur_words[-1]["start"]),
+            "text": text,
+        })
+
+    return _merge_short_fragments(result)
+
+
+def _merge_short_fragments(segments: list[dict], min_duration: float = 0.8) -> list[dict]:
+    if len(segments) < 3:
+        return segments
+    merged = [segments[0]]
+    for i in range(1, len(segments)):
+        cur = segments[i]
+        prev = merged[-1]
+        cur_dur = cur.get("end", 0) - cur.get("start", 0)
+        if (
+            cur_dur < min_duration
+            and cur.get("speaker") != prev.get("speaker")
+            and i + 1 < len(segments)
+            and segments[i + 1].get("speaker") == prev.get("speaker")
+        ):
+            merged[-1] = {
+                **prev,
+                "end": cur["end"],
+                "text": (prev.get("text", "") + " " + cur.get("text", "")).strip(),
+            }
+            continue
+        if cur.get("speaker") == prev.get("speaker"):
+            merged[-1] = {
+                **prev,
+                "end": cur["end"],
+                "text": (prev.get("text", "") + " " + cur.get("text", "")).strip(),
+            }
+            continue
+        merged.append(cur)
+    return merged
+
+
+def _clean_script_tails(segments: list[dict]) -> list[dict]:
+    cleaned = []
+    for seg in segments:
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+        trimmed = _trim_script_tail(text)
+        if trimmed != text:
+            seg = {**seg, "text": trimmed}
+            if trimmed:
+                cleaned.append(seg)
+        else:
+            cleaned.append(seg)
+    return cleaned
+
+
+def _trim_script_tail(text: str) -> str:
+    words = text.split()
+    if len(words) < 3:
+        return text
+
+    def _dominant_script(word: str):
+        latin = sum(1 for c in word if c.isalpha() and ord(c) < 0x0250)
+        cyrillic = sum(1 for c in word if '\u0400' <= c <= '\u04FF')
+        if latin > cyrillic:
+            return "latin"
+        if cyrillic > latin:
+            return "cyrillic"
+        return None
+
+    first_scripts = [_dominant_script(w) for w in words[:10] if _dominant_script(w)]
+    if not first_scripts:
+        return text
+    main_script = Counter(first_scripts).most_common(1)[0][0]
+
+    cut = len(words)
+    foreign_run = 0
+    for i in range(len(words) - 1, -1, -1):
+        s = _dominant_script(words[i])
+        if s and s != main_script:
+            foreign_run += 1
+        elif s == main_script:
+            break
+    if foreign_run >= 2:
+        cut = len(words) - foreign_run
+        return " ".join(words[:cut]).rstrip(" ,.:;-–—")
+    return text
 
 
 def _remove_hallucinations(segments: list[dict]) -> list[dict]:
@@ -210,9 +376,23 @@ def _remove_hallucinations(segments: list[dict]) -> list[dict]:
         if _is_repetitive(text):
             trimmed = _trim_repetition(text)
             if trimmed:
-                seg = {**seg, "text": trimmed}
+                trimmed = _trim_script_tail(trimmed)
+            if trimmed:
+                trimmed_word_count = len(trimmed.split())
+                words = seg.get("words", [])
+                kept_words = words[:trimmed_word_count]
+                new_end = kept_words[-1].get("end", seg.get("end", 0)) if kept_words else seg.get("end", 0)
+                seg = {**seg, "text": trimmed, "words": kept_words, "end": new_end}
                 cleaned.append(seg)
             continue
+
+        trimmed = _trim_script_tail(text)
+        if trimmed != text:
+            trimmed_word_count = len(trimmed.split())
+            words = seg.get("words", [])
+            kept_words = words[:trimmed_word_count]
+            new_end = kept_words[-1].get("end", seg.get("end", 0)) if kept_words else seg.get("end", 0)
+            seg = {**seg, "text": trimmed, "words": kept_words, "end": new_end}
         cleaned.append(seg)
     return cleaned
 
@@ -226,7 +406,7 @@ def _is_repetitive(text: str) -> bool:
         if not ngrams:
             continue
         most_common_count = Counter(ngrams).most_common(1)[0][1]
-        if most_common_count >= 4 and most_common_count / len(ngrams) > 0.3:
+        if most_common_count >= 4 and (most_common_count / len(ngrams) > 0.3 or most_common_count >= 8):
             return True
     return False
 
@@ -244,55 +424,6 @@ def _trim_repetition(text: str) -> str:
             first_idx = next(i for i in range(len(words) - ngram_size + 1) if " ".join(words[i:i + ngram_size]) == repeated)
             return " ".join(words[:first_idx + ngram_size])
     return text
-
-
-def _align_with_timeout(result, languages_used, audio, device, timeout=120):
-    container = [None]
-    error = [None]
-
-    def run():
-        try:
-            container[0] = _align_multilang(result, languages_used, audio, device)
-        except Exception as e:
-            error[0] = e
-
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-    t.join(timeout=timeout)
-    if t.is_alive():
-        return None
-    if error[0]:
-        raise error[0]
-    return container[0]
-
-
-def _align_multilang(result, languages_used, audio, device):
-    import whisperx
-
-    unique_langs = list(dict.fromkeys(languages_used))
-    segments = result["segments"]
-
-    aligned_segments = []
-    for lang in unique_langs:
-        lang_segs = [s for s in segments if s.get("_lang", unique_langs[0]) == lang]
-        if not lang_segs:
-            continue
-        try:
-            model_a, metadata = whisperx.load_align_model(
-                language_code=lang, device=device
-            )
-            aligned = whisperx.align(
-                lang_segs, model_a, metadata, audio, device,
-                return_char_alignments=False,
-            )
-            aligned_segments.extend(aligned["segments"])
-            del model_a
-            _cleanup_cuda()
-        except Exception:
-            aligned_segments.extend(lang_segs)
-
-    aligned_segments.sort(key=lambda s: s.get("start", 0))
-    return {"segments": aligned_segments}
 
 
 def format_raw_transcript(
