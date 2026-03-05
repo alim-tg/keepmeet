@@ -1,11 +1,15 @@
 import dataclasses
 import gc
+import logging
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from collections import Counter
+
+logger = logging.getLogger(__name__)
 
 import requests
 
@@ -16,15 +20,27 @@ CHUNK_PAD_LEAD = 5
 CHUNK_PAD_TRAIL = 30
 
 
-def _ensure_ffmpeg():
+_ffmpeg_path: str | None = None
+
+
+def _get_ffmpeg() -> str:
+    global _ffmpeg_path
+    if _ffmpeg_path:
+        return _ffmpeg_path
     if shutil.which("ffmpeg"):
-        return
+        _ffmpeg_path = "ffmpeg"
+        return _ffmpeg_path
     try:
         import imageio_ffmpeg
-        ffmpeg_dir = os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
-        os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+        _ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        return _ffmpeg_path
     except ImportError:
         pass
+    raise TranscriptionError("ffmpeg not found")
+
+
+def _ensure_ffmpeg():
+    _get_ffmpeg()
 
 
 class TranscriptionError(Exception):
@@ -50,7 +66,7 @@ def _attach_words_to_segments(segments: list[dict], words: list[dict]):
 
 def _get_audio_duration(audio_path: str) -> float:
     result = subprocess.run(
-        ["ffmpeg", "-i", audio_path, "-f", "null", "-"],
+        [_get_ffmpeg(), "-i", audio_path, "-f", "null", "-"],
         capture_output=True, text=True, timeout=60,
     )
     import re as _re
@@ -63,7 +79,7 @@ def _get_audio_duration(audio_path: str) -> float:
 
 def _extract_chunk(audio_path: str, start: float, duration: float, out_path: str):
     subprocess.run(
-        ["ffmpeg", "-y", "-i", audio_path, "-ss", str(start), "-t", str(duration),
+        [_get_ffmpeg(), "-y", "-i", audio_path, "-ss", str(start), "-t", str(duration),
          "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", out_path],
         capture_output=True, timeout=60,
     )
@@ -151,7 +167,11 @@ def _transcribe_deepinfra(audio_path: str, config: Config):
             chunk_path = os.path.join(tmp_dir, f"chunk_{int(logical_start)}.wav")
             _extract_chunk(audio_path, feed_start, feed_duration, chunk_path)
 
+            chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
+            logger.info(f"Chunk {int(logical_start)}s: {feed_duration:.0f}s audio, {chunk_size_mb:.1f}MB, uploading...")
+            t0 = time.time()
             data = _transcribe_chunk_with_retry(chunk_path, config)
+            logger.info(f"Chunk {int(logical_start)}s: API took {time.time() - t0:.1f}s")
             languages.append(data.get("language", "en"))
 
             new_seg_idx = len(all_segments)
@@ -176,6 +196,53 @@ def _transcribe_deepinfra(audio_path: str, config: Config):
             _attach_words_to_segments(all_segments[new_seg_idx:], chunk_words)
 
             logical_start = logical_end
+
+        all_segments.sort(key=lambda s: s.get("start", 0))
+
+        gaps = []
+        for i in range(len(all_segments) - 1):
+            gap_start = all_segments[i].get("end", 0)
+            gap_end = all_segments[i + 1].get("start", 0)
+            if gap_end - gap_start > 5.0:
+                gaps.append((gap_end - gap_start, gap_start, gap_end))
+        gaps.sort(reverse=True)
+        gaps = [(s, e) for _, s, e in gaps[:5]]
+
+        for gap_start, gap_end in gaps:
+            pad = 2.0
+            chunk_path = os.path.join(tmp_dir, f"gap_{int(gap_start)}.wav")
+            extract_start = max(0.0, gap_start - pad)
+            extract_dur = (gap_end - gap_start) + 2 * pad
+            _extract_chunk(audio_path, extract_start, extract_dur, chunk_path)
+            try:
+                data = _transcribe_deepinfra_chunk(chunk_path, config)
+            except Exception:
+                continue
+            for seg in data.get("segments", []):
+                seg_start = seg.get("start", 0) + extract_start
+                seg_end = seg.get("end", 0) + extract_start
+                if seg_start < gap_start - 0.5 or seg_end > gap_end + 0.5:
+                    continue
+                seg["start"] = seg_start
+                seg["end"] = seg_end
+                for w in seg.get("words", []):
+                    if "start" in w:
+                        w["start"] += extract_start
+                    if "end" in w:
+                        w["end"] += extract_start
+                all_segments.append(seg)
+            gap_words = data.get("words", [])
+            for w in gap_words:
+                if "start" in w:
+                    w["start"] += extract_start
+                if "end" in w:
+                    w["end"] += extract_start
+            new_segs = [s for s in all_segments if s.get("start", 0) >= gap_start - 0.5 and s.get("end", 0) <= gap_end + 0.5]
+            for seg in new_segs:
+                if not seg.get("words"):
+                    _attach_words_to_segments([seg], gap_words)
+
+        all_segments.sort(key=lambda s: s.get("start", 0))
 
     primary_lang = Counter(languages).most_common(1)[0][0]
     return all_segments, primary_lang
@@ -205,18 +272,40 @@ def transcribe_audio(
         on_stage("diarizing")
 
     try:
-        import whisperx
-        from whisperx.diarize import DiarizationPipeline
+        import numpy as np
+        import pandas as pd
+        from pyannote.audio import Pipeline as DiarizePipeline
 
-        audio = whisperx.load_audio(audio_path)
-        diarize_model = DiarizationPipeline(token=config.hf_token, device=device)
-        diarize_df = diarize_model(audio)
+        pipeline = DiarizePipeline.from_pretrained(
+            "pyannote/speaker-diarization-community-1",
+            token=config.hf_token,
+        )
+        pipeline.to(torch.device(device))
 
-        transcript_dict = {"segments": segments}
-        result = whisperx.assign_word_speakers(diarize_df, transcript_dict)
-        segments = _regroup_by_speaker(result["segments"])
+        params = pipeline.parameters(instantiated=True)
+        params["segmentation"]["min_duration_off"] = 0.2
+        pipeline.instantiate(params)
 
-        del diarize_model
+        _ensure_ffmpeg()
+        raw = subprocess.run(
+            [_get_ffmpeg(), "-i", audio_path, "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
+            capture_output=True, check=True, timeout=120,
+        ).stdout
+        audio_np = np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+        waveform = torch.from_numpy(audio_np).unsqueeze(0)
+        audio_input = {"waveform": waveform, "sample_rate": 16000}
+
+        diarization = pipeline(audio_input)
+        annotation = getattr(diarization, "speaker_diarization", diarization)
+
+        rows = []
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
+            rows.append({"start": turn.start, "end": turn.end, "speaker": speaker})
+        diarize_df = pd.DataFrame(rows)
+
+        segments = _assign_speakers_and_regroup(diarize_df, segments)
+
+        del pipeline
         _cleanup_cuda()
     except Exception as e:
         raise TranscriptionError(f"Diarization failed: {e}") from e
@@ -229,22 +318,57 @@ def transcribe_audio(
     )
 
 
-def _regroup_by_speaker(segments: list[dict]) -> list[dict]:
+def _filter_diarization_noise(segs: list[tuple], min_dur: float = 0.25) -> list[tuple]:
+    kept = []
+    for start, end, speaker in segs:
+        dur = end - start
+        if dur >= min_dur:
+            kept.append((start, end, speaker))
+            continue
+        dominated = False
+        for o_start, o_end, o_speaker in segs:
+            if o_speaker == speaker:
+                continue
+            overlap = max(0, min(end, o_end) - max(start, o_start))
+            if overlap > dur * 0.5 and (o_end - o_start) > dur * 3:
+                dominated = True
+                break
+        if not dominated:
+            kept.append((start, end, speaker))
+    return kept
+
+
+def _assign_speakers_and_regroup(diarize_df, segments: list[dict]) -> list[dict]:
+    if diarize_df is None or len(diarize_df) == 0:
+        return segments
+
+    raw_segs = [
+        (row["start"], row["end"], row["speaker"])
+        for _, row in diarize_df.iterrows()
+    ]
+    raw_segs.sort(key=lambda x: x[0])
+
+    diar_segs = _filter_diarization_noise(raw_segs)
+
+    boundaries = []
+    for i in range(1, len(diar_segs)):
+        boundaries.append({
+            "time": (diar_segs[i - 1][1] + diar_segs[i][0]) / 2,
+            "prev_speaker": diar_segs[i - 1][2],
+            "next_speaker": diar_segs[i][2],
+            "prev_end": diar_segs[i - 1][1],
+            "next_start": diar_segs[i][0],
+        })
+
     all_words = []
     for seg in segments:
-        seg_speaker = seg.get("speaker")
         for w in seg.get("words", []):
-            if "start" not in w:
-                continue
-            if not w.get("speaker") and seg_speaker:
-                w["speaker"] = seg_speaker
-            if w.get("speaker"):
+            if "start" in w:
                 all_words.append(w)
     if not all_words:
         return segments
 
     all_words.sort(key=lambda w: w["start"])
-
     deduped = [all_words[0]]
     for w in all_words[1:]:
         if w["start"] - deduped[-1]["start"] < 0.1:
@@ -252,8 +376,70 @@ def _regroup_by_speaker(segments: list[dict]) -> list[dict]:
         deduped.append(w)
     all_words = deduped
 
+    for w in all_words:
+        mid = (w["start"] + w.get("end", w["start"])) / 2
+        best_speaker = None
+        best_overlap = 0.0
+        for ds_start, ds_end, ds_speaker in diar_segs:
+            if ds_end < w["start"] - 1.0:
+                continue
+            if ds_start > w.get("end", w["start"]) + 1.0:
+                break
+            overlap = max(0, min(ds_end, w.get("end", w["start"])) - max(ds_start, w["start"]))
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_speaker = ds_speaker
+        if not best_speaker:
+            min_dist = float("inf")
+            for ds_start, ds_end, ds_speaker in diar_segs:
+                dist = min(abs(mid - ds_start), abs(mid - ds_end))
+                if dist < min_dist:
+                    min_dist = dist
+                    best_speaker = ds_speaker
+        w["speaker"] = best_speaker
+
+    SNAP_TOLERANCE = 2.0
+    for b in boundaries:
+        if b["prev_speaker"] == b["next_speaker"]:
+            continue
+        bt = b["time"]
+        nearby_idx = []
+        for i, w in enumerate(all_words):
+            w_mid = (w["start"] + w.get("end", w["start"])) / 2
+            if abs(w_mid - bt) < SNAP_TOLERANCE:
+                nearby_idx.append(i)
+        if not nearby_idx:
+            continue
+
+        best_split = None
+        best_gap = -1.0
+        for i in nearby_idx:
+            if i == 0:
+                continue
+            prev_end = all_words[i - 1].get("end", all_words[i - 1]["start"])
+            cur_start = all_words[i]["start"]
+            gap = cur_start - prev_end
+            if gap > best_gap:
+                best_gap = gap
+                best_split = i
+
+        if best_split is not None and best_gap >= 0.05:
+            lo = nearby_idx[0]
+            hi = nearby_idx[-1] + 1
+            for i in range(lo, best_split):
+                all_words[i]["speaker"] = b["prev_speaker"]
+            for i in range(best_split, hi):
+                all_words[i]["speaker"] = b["next_speaker"]
+
+    return _words_to_segments(all_words)
+
+
+def _words_to_segments(all_words: list[dict]) -> list[dict]:
+    if not all_words:
+        return []
+
     result = []
-    cur_spk = all_words[0]["speaker"]
+    cur_spk = all_words[0].get("speaker")
     cur_words = [all_words[0]]
 
     for w in all_words[1:]:
@@ -270,7 +456,7 @@ def _regroup_by_speaker(segments: list[dict]) -> list[dict]:
                     "end": cur_words[-1].get("end", cur_words[-1]["start"]),
                     "text": text,
                 })
-            cur_spk = w["speaker"]
+            cur_spk = w.get("speaker")
             cur_words = [w]
 
     text = " ".join(
@@ -284,38 +470,61 @@ def _regroup_by_speaker(segments: list[dict]) -> list[dict]:
             "text": text,
         })
 
-    return _merge_short_fragments(result)
+    merged = _merge_same_speaker(result)
+    return _merge_sandwiched(merged)
 
 
-def _merge_short_fragments(segments: list[dict], min_duration: float = 0.8) -> list[dict]:
-    if len(segments) < 3:
+def _merge_same_speaker(segments: list[dict]) -> list[dict]:
+    if not segments:
         return segments
     merged = [segments[0]]
-    for i in range(1, len(segments)):
-        cur = segments[i]
+    for cur in segments[1:]:
         prev = merged[-1]
-        cur_dur = cur.get("end", 0) - cur.get("start", 0)
-        if (
-            cur_dur < min_duration
-            and cur.get("speaker") != prev.get("speaker")
-            and i + 1 < len(segments)
-            and segments[i + 1].get("speaker") == prev.get("speaker")
-        ):
-            merged[-1] = {
-                **prev,
-                "end": cur["end"],
-                "text": (prev.get("text", "") + " " + cur.get("text", "")).strip(),
-            }
-            continue
         if cur.get("speaker") == prev.get("speaker"):
             merged[-1] = {
                 **prev,
                 "end": cur["end"],
                 "text": (prev.get("text", "") + " " + cur.get("text", "")).strip(),
             }
-            continue
-        merged.append(cur)
+        else:
+            merged.append(cur)
     return merged
+
+
+def _merge_sandwiched(segments: list[dict], max_duration: float = 2.0) -> list[dict]:
+    if len(segments) < 3:
+        return segments
+    changed = True
+    while changed:
+        changed = False
+        new_segs = [segments[0]]
+        i = 1
+        while i < len(segments):
+            cur = segments[i]
+            prev = new_segs[-1]
+            cur_dur = cur.get("end", 0) - cur.get("start", 0)
+            nxt = segments[i + 1] if i + 1 < len(segments) else None
+            if (
+                cur_dur < max_duration
+                and cur.get("speaker") != prev.get("speaker")
+                and nxt
+                and nxt.get("speaker") == prev.get("speaker")
+            ):
+                gap_before = cur.get("start", 0) - prev.get("end", 0)
+                gap_after = nxt.get("start", 0) - cur.get("end", 0)
+                if gap_before < 0.5 and gap_after < 0.5:
+                    new_segs[-1] = {
+                        **prev,
+                        "end": nxt["end"],
+                        "text": (prev.get("text", "") + " " + cur.get("text", "") + " " + nxt.get("text", "")).strip(),
+                    }
+                    i += 2
+                    changed = True
+                    continue
+            new_segs.append(cur)
+            i += 1
+        segments = new_segs
+    return segments
 
 
 def _clean_script_tails(segments: list[dict]) -> list[dict]:
