@@ -43,9 +43,6 @@ def process(audio_file, meeting_date, language, speaker_profile,
     except ConfigError as e:
         raise click.ClickException(str(e))
 
-    if language:
-        config.language = language
-
     if not meeting_date:
         meeting_date = str(date.today())
 
@@ -149,6 +146,12 @@ def check():
         click.echo("[OK] HuggingFace token set")
     else:
         click.echo("[FAIL] HF_TOKEN not set in .env")
+        ok = False
+
+    if config and config.deepinfra_api_key:
+        click.echo("[OK] DeepInfra API key set")
+    else:
+        click.echo("[FAIL] DEEPINFRA_API_KEY not set in .env")
         ok = False
 
     if shutil.which("claude"):

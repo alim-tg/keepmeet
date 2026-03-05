@@ -42,6 +42,28 @@ class JobDetail(BaseModel):
     raw_transcript: str | None
     formatted_notes: str | None
     confluence_url: str | None
+    matched_profiles: dict[str, Any] = {}
+
+
+class SpeakerProfileResponse(BaseModel):
+    slug: str
+    name: str
+    role: str
+    description: str
+    has_embedding: bool
+    has_voice_sample: bool = False
+
+
+class SpeakerProfileCreateRequest(BaseModel):
+    name: str
+    role: str = ""
+    description: str = ""
+
+
+class SpeakerProfileUpdateRequest(BaseModel):
+    name: str | None = None
+    role: str | None = None
+    description: str | None = None
 
 
 class ConfigResponse(BaseModel):

@@ -26,6 +26,13 @@ export interface JobDetail {
   raw_transcript: string | null
   formatted_notes: string | null
   confluence_url: string | null
+  matched_profiles: Record<string, {
+    slug: string
+    name: string
+    role: string
+    description: string
+    confidence: number
+  }>
 }
 
 export interface AppConfig {

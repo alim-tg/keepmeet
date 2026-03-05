@@ -8,6 +8,15 @@ from fastapi.responses import FileResponse
 from ..config import load_config
 from ..formatter import format_with_claude
 from ..publisher import publish_to_confluence
+from ..speaker_profiles import (
+    delete_profile,
+    extract_speaker_embedding,
+    extract_voice_sample,
+    list_profiles,
+    load_profile,
+    save_profile,
+    update_profile,
+)
 from ..transcriber import TranscriptResult, format_raw_transcript
 from .jobs import run_job
 from .models import (
@@ -15,11 +24,26 @@ from .models import (
     JobDetail,
     JobSummary,
     PublishRequest,
+    SpeakerProfileCreateRequest,
+    SpeakerProfileResponse,
+    SpeakerProfileUpdateRequest,
     SpeakerUpdateRequest,
 )
 from .storage import UPLOADS_DIR, create_job, delete_job, list_jobs, read_job, update_job
 
 router = APIRouter(prefix="/api")
+
+
+def _profile_response(p, config) -> SpeakerProfileResponse:
+    profile_dir = Path(config.speaker_profiles_dir) / p.slug
+    return SpeakerProfileResponse(
+        slug=p.slug,
+        name=p.name,
+        role=p.role,
+        description=p.description,
+        has_embedding=p.embedding is not None,
+        has_voice_sample=(profile_dir / "voice_sample.wav").exists(),
+    )
 
 
 @router.post("/jobs")
@@ -64,10 +88,11 @@ async def create_new_job(
         "raw_transcript": None,
         "formatted_notes": None,
         "confluence_url": None,
+        "matched_profiles": {},
     }
 
     create_job(job_id, job_data)
-    run_job(job_id, str(audio_path), meeting_date, language=job_data["language"])
+    run_job(job_id, str(audio_path), meeting_date)
 
     return {"job_id": job_id}
 
@@ -121,7 +146,10 @@ async def reformat_job(job_id: str):
 
     update_job(job_id, status="reformatting")
     try:
-        formatted_notes = format_with_claude(raw_transcript, job["meeting_date"])
+        matched_profiles = job.get("matched_profiles", {})
+        formatted_notes = format_with_claude(
+            raw_transcript, job["meeting_date"], matched_profiles
+        )
         update_job(job_id, status="completed", formatted_notes=formatted_notes)
         return {"ok": True, "formatted_notes": formatted_notes}
     except Exception as e:
@@ -164,6 +192,82 @@ async def get_audio(job_id: str):
     ext = audio_path.suffix.lower()
     media_types = {".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav"}
     return FileResponse(audio_path, media_type=media_types.get(ext, "audio/mpeg"))
+
+
+@router.get("/profiles", response_model=list[SpeakerProfileResponse])
+async def get_profiles():
+    config = load_config()
+    profiles = list_profiles(config)
+    return [_profile_response(p, config) for p in profiles]
+
+
+@router.get("/profiles/{slug}", response_model=SpeakerProfileResponse)
+async def get_profile(slug: str):
+    config = load_config()
+    profile_dir = Path(config.speaker_profiles_dir) / slug
+    if not profile_dir.exists() or not (profile_dir / "profile.json").exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    p = load_profile(profile_dir)
+    return _profile_response(p, config)
+
+
+@router.post("/profiles/from-job/{job_id}/{speaker_id}", response_model=SpeakerProfileResponse)
+async def create_profile_from_job(
+    job_id: str, speaker_id: str, body: SpeakerProfileCreateRequest
+):
+    job = read_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    segments = job.get("segments", [])
+    audio_path = job.get("audio_path", "")
+    if not segments or not audio_path:
+        raise HTTPException(status_code=400, detail="Job has no segments or audio")
+
+    config = load_config()
+    embedding = None
+    try:
+        embedding = extract_speaker_embedding(
+            audio_path, segments, speaker_id, config.hf_token
+        )
+    except Exception:
+        pass
+
+    profile = save_profile(config, body.name, body.role, body.description, embedding)
+
+    try:
+        profile_dir = Path(config.speaker_profiles_dir) / profile.slug
+        extract_voice_sample(audio_path, segments, speaker_id, profile_dir)
+    except Exception:
+        pass
+
+    return _profile_response(profile, config)
+
+
+@router.patch("/profiles/{slug}", response_model=SpeakerProfileResponse)
+async def patch_profile(slug: str, body: SpeakerProfileUpdateRequest):
+    config = load_config()
+    profile = update_profile(config, slug, name=body.name, role=body.role, description=body.description)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return _profile_response(profile, config)
+
+
+@router.delete("/profiles/{slug}")
+async def remove_profile(slug: str):
+    config = load_config()
+    if not delete_profile(config, slug):
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return {"ok": True}
+
+
+@router.get("/profiles/{slug}/voice-sample")
+async def get_voice_sample(slug: str):
+    config = load_config()
+    wav_path = Path(config.speaker_profiles_dir) / slug / "voice_sample.wav"
+    if not wav_path.exists():
+        raise HTTPException(status_code=404, detail="Voice sample not found")
+    return FileResponse(wav_path, media_type="audio/wav")
 
 
 @router.get("/config", response_model=ConfigResponse)

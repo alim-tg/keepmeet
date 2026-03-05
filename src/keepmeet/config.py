@@ -1,6 +1,5 @@
 import dataclasses
 import os
-import sys
 from pathlib import Path
 
 import yaml
@@ -14,15 +13,12 @@ class ConfigError(Exception):
 @dataclasses.dataclass
 class Config:
     hf_token: str
+    deepinfra_api_key: str
     confluence_base_url: str
     confluence_email: str
     confluence_api_token: str
     confluence_space_key: str
     confluence_parent_page_id: str | None
-    whisper_model: str
-    compute_type: str
-    batch_size: int
-    language: str | None
     speaker_profiles_dir: str
     default_speaker_profile: str
 
@@ -42,24 +38,24 @@ def load_config(
             cfg = yaml.safe_load(f) or {}
 
     confluence = cfg.get("confluence", {})
-    whisper = cfg.get("whisper", {})
     speakers = cfg.get("speakers", {})
 
     hf_token = os.getenv("HF_TOKEN", "")
     if not hf_token:
         raise ConfigError("HF_TOKEN is required in .env for pyannote diarization model access")
 
+    deepinfra_api_key = os.getenv("DEEPINFRA_API_KEY", "")
+    if not deepinfra_api_key:
+        raise ConfigError("DEEPINFRA_API_KEY is required in .env for transcription")
+
     return Config(
         hf_token=hf_token,
+        deepinfra_api_key=deepinfra_api_key,
         confluence_base_url=confluence.get("base_url", ""),
         confluence_email=os.getenv("CONFLUENCE_EMAIL", ""),
         confluence_api_token=os.getenv("CONFLUENCE_API_TOKEN", ""),
         confluence_space_key=confluence.get("space_key", ""),
         confluence_parent_page_id=confluence.get("parent_page_id"),
-        whisper_model=whisper.get("model", "medium"),
-        compute_type=whisper.get("compute_type", "int8"),
-        batch_size=whisper.get("batch_size", 4),
-        language=whisper.get("language"),
         speaker_profiles_dir=speakers.get("profiles_dir", "./speaker_profiles"),
         default_speaker_profile=speakers.get("default_profile", "default.json"),
     )

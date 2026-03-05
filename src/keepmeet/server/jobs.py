@@ -3,6 +3,7 @@ from datetime import datetime
 
 from ..config import load_config
 from ..formatter import format_with_claude
+from ..speaker_profiles import match_speakers
 from ..transcriber import (
     TranscriptResult,
     extract_speakers,
@@ -12,19 +13,18 @@ from ..transcriber import (
 from .storage import update_job
 
 
-def run_job(job_id: str, audio_path: str, meeting_date: str, language: str | None = None):
+def run_job(job_id: str, audio_path: str, meeting_date: str):
     thread = threading.Thread(
         target=_process,
-        args=(job_id, audio_path, meeting_date, language),
+        args=(job_id, audio_path, meeting_date),
         daemon=True,
     )
     thread.start()
 
 
-def _process(job_id: str, audio_path: str, meeting_date: str, language: str | None = None):
+def _process(job_id: str, audio_path: str, meeting_date: str):
     try:
         config = load_config()
-        config.language = language
 
         def on_stage(stage: str):
             update_job(job_id, stage=stage)
@@ -34,6 +34,18 @@ def _process(job_id: str, audio_path: str, meeting_date: str, language: str | No
 
         speakers = extract_speakers(result)
         speaker_map = {s: s for s in speakers}
+
+        update_job(job_id, stage="matching_speakers")
+        matched_profiles = {}
+        try:
+            match_result = match_speakers(
+                audio_path, result.segments, speakers, config
+            )
+            speaker_map = match_result["speaker_map"]
+            matched_profiles = match_result["matched_profiles"]
+        except Exception:
+            pass
+
         raw_transcript = format_raw_transcript(result, speaker_map)
 
         update_job(
@@ -44,9 +56,12 @@ def _process(job_id: str, audio_path: str, meeting_date: str, language: str | No
             segments=[s for s in result.segments],
             raw_transcript=raw_transcript,
             language=result.language,
+            matched_profiles=matched_profiles,
         )
 
-        formatted_notes = format_with_claude(raw_transcript, meeting_date)
+        formatted_notes = format_with_claude(
+            raw_transcript, meeting_date, matched_profiles
+        )
 
         update_job(
             job_id,

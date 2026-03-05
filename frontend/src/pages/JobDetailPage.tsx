@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useRef } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -11,6 +11,8 @@ import { MarkdownRenderer } from "@/components/MarkdownRenderer"
 import { CopyButton } from "@/components/CopyButton"
 import { SpeakerEditor } from "@/components/SpeakerEditor"
 import { ConfluencePublishCard } from "@/components/ConfluencePublishCard"
+import { AudioPlayer, type AudioPlayerHandle } from "@/components/AudioPlayer"
+import { TranscriptView } from "@/components/TranscriptView"
 import { usePolling } from "@/hooks/usePolling"
 import {
   getJob,
@@ -19,7 +21,7 @@ import {
   reformatJob,
   type JobDetail,
 } from "@/api/jobs"
-import { AlertCircle, Trash2, ArrowLeft, Calendar, Languages, Volume2 } from "lucide-react"
+import { AlertCircle, Trash2, ArrowLeft, Calendar, Languages } from "lucide-react"
 
 export function JobDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -30,6 +32,8 @@ export function JobDetailPage() {
   const [saving, setSaving] = useState(false)
   const [reformatting, setReformatting] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [audioTime, setAudioTime] = useState(0)
+  const audioRef = useRef<AudioPlayerHandle>(null)
 
   const isProcessing = job?.status === "processing" || job?.status === "pending"
 
@@ -129,14 +133,7 @@ export function JobDetailPage() {
 
       <Card>
         <CardContent className="py-4">
-          <div className="flex items-center gap-3">
-            <Volume2 className="h-4 w-4 text-primary shrink-0" />
-            <audio
-              controls
-              src={`/api/jobs/${job.job_id}/audio`}
-              className="w-full h-9 [&::-webkit-media-controls-panel]:bg-white/[0.04] [&::-webkit-media-controls-panel]:rounded-lg"
-            />
-          </div>
+          <AudioPlayer ref={audioRef} src={`/api/jobs/${job.job_id}/audio`} onTimeUpdate={setAudioTime} />
         </CardContent>
       </Card>
 
@@ -191,7 +188,14 @@ export function JobDetailPage() {
                   {job.raw_transcript && <CopyButton text={job.raw_transcript} />}
                 </CardHeader>
                 <CardContent>
-                  {job.raw_transcript ? (
+                  {job.segments && job.segments.length > 0 ? (
+                    <TranscriptView
+                      segments={job.segments}
+                      speakerMap={job.speaker_map}
+                      currentTime={audioTime}
+                      onSeek={(s) => audioRef.current?.seekTo(s)}
+                    />
+                  ) : job.raw_transcript ? (
                     <pre className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground font-mono">{job.raw_transcript}</pre>
                   ) : (
                     <p className="text-muted-foreground">No transcript available</p>

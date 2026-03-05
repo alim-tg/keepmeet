@@ -12,12 +12,34 @@ PROMPT_TEMPLATE = (
     "Use markdown formatting with ## for speaker names and bullet lists for their updates.\n"
     "Keep it concise. Do not add information that is not in the transcript.\n"
     "Meeting date: {meeting_date}\n"
+    "{speaker_context}"
     "\n---\n\n"
 )
 
 
-def format_with_claude(raw_transcript: str, meeting_date: str) -> str:
-    prompt = PROMPT_TEMPLATE.format(meeting_date=meeting_date)
+def _build_speaker_context(matched_profiles: dict) -> str:
+    if not matched_profiles:
+        return ""
+    lines = ["\nSpeaker context:"]
+    for info in matched_profiles.values():
+        parts = [info["name"]]
+        if info.get("role"):
+            parts[0] += f" (Role: {info['role']})"
+        if info.get("description"):
+            parts.append(f"-- {info['description']}")
+        lines.append(f"- {' '.join(parts)}")
+    return "\n".join(lines) + "\n"
+
+
+def format_with_claude(
+    raw_transcript: str,
+    meeting_date: str,
+    matched_profiles: dict | None = None,
+) -> str:
+    speaker_context = _build_speaker_context(matched_profiles or {})
+    prompt = PROMPT_TEMPLATE.format(
+        meeting_date=meeting_date, speaker_context=speaker_context
+    )
     input_text = f"{prompt}{raw_transcript}"
 
     env = os.environ.copy()

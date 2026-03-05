@@ -1,12 +1,12 @@
 import { cn } from "@/lib/utils"
-import { Loader2, Check, Mic, AlignLeft, Users, FileText } from "lucide-react"
+import { Loader2, Check, Mic, Users, UserCheck, FileText } from "lucide-react"
 
-const STAGES = ["transcribing", "aligning", "diarizing", "formatting"] as const
+const STAGES = ["transcribing", "diarizing", "matching_speakers", "formatting"] as const
 
 const STAGE_CONFIG: Record<string, { label: string; icon: typeof Mic }> = {
   transcribing: { label: "Transcribing audio", icon: Mic },
-  aligning: { label: "Aligning words", icon: AlignLeft },
   diarizing: { label: "Identifying speakers", icon: Users },
+  matching_speakers: { label: "Matching speakers", icon: UserCheck },
   formatting: { label: "Formatting notes", icon: FileText },
 }
 
