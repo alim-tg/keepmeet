@@ -3,6 +3,20 @@ import { Badge } from "@/components/ui/badge"
 import type { JobSummary } from "@/api/jobs"
 import { ChevronRight, Loader2 } from "lucide-react"
 
+const PUBLISH_LABEL: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
+  published: { label: "published", variant: "default" },
+  awaiting_review: { label: "needs review", variant: "secondary" },
+  publish_failed: { label: "publish failed", variant: "destructive" },
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  "teams-auto": "Teams · OneDrive",
+  "teams-chat": "Teams · chat",
+  "teams-shared": "Teams · shared",
+  "teams-link": "Teams link",
+  "local-recorder": "Recorded on this PC",
+}
+
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   completed: "default",
   processing: "secondary",
@@ -42,10 +56,18 @@ export function JobTable({ jobs }: { jobs: JobSummary[] }) {
                 {job.status === "processing" && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
                 {job.status}
               </Badge>
+              {job.status === "completed" && job.publish_status && PUBLISH_LABEL[job.publish_status] && (
+                <Badge variant={PUBLISH_LABEL[job.publish_status].variant}>
+                  {PUBLISH_LABEL[job.publish_status].label}
+                </Badge>
+              )}
             </div>
             <div className="flex items-center gap-3 mt-1">
               <span className="text-xs text-muted-foreground">{job.meeting_date}</span>
               {job.language && <span className="text-xs text-muted-foreground/60">{job.language}</span>}
+              {job.source && SOURCE_LABEL[job.source] && (
+                <span className="text-xs text-muted-foreground/60">{SOURCE_LABEL[job.source]}</span>
+              )}
             </div>
           </div>
           <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors" />

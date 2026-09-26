@@ -6,8 +6,8 @@ import { Label } from "@/components/ui/label"
 import { Select } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { FileDropzone } from "@/components/FileDropzone"
-import { createJob } from "@/api/jobs"
-import { ArrowLeft, Loader2, Sparkles } from "lucide-react"
+import { createJob, createJobFromLink } from "@/api/jobs"
+import { ArrowLeft, Link2, Loader2, Sparkles } from "lucide-react"
 import { Link } from "react-router-dom"
 
 function todayStr() {
@@ -20,8 +20,12 @@ export function NewJobPage() {
   const [title, setTitle] = useState(`Daily Standup - ${todayStr()}`)
   const [date, setDate] = useState(todayStr())
   const [language, setLanguage] = useState("")
+  const [numSpeakers, setNumSpeakers] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
+  const [link, setLink] = useState("")
+  const [linkSubmitting, setLinkSubmitting] = useState(false)
+  const [linkError, setLinkError] = useState("")
 
   const handleDateChange = (d: string) => {
     setDate(d)
@@ -34,11 +38,25 @@ export function NewJobPage() {
     setSubmitting(true)
     setError("")
     try {
-      const res = await createJob(file, title, date, language)
+      const res = await createJob(file, title, date, language, numSpeakers ? parseInt(numSpeakers) : undefined)
       navigate(`/jobs/${res.job_id}`)
     } catch (err) {
       setError((err as Error).message)
       setSubmitting(false)
+    }
+  }
+
+  const handleLinkSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!link.trim()) return
+    setLinkSubmitting(true)
+    setLinkError("")
+    try {
+      const res = await createJobFromLink(link.trim(), "", "", language)
+      navigate(`/jobs/${res.job_id}`)
+    } catch (err) {
+      setLinkError((err as Error).message)
+      setLinkSubmitting(false)
     }
   }
 
@@ -73,6 +91,17 @@ export function NewJobPage() {
                 </Select>
               </div>
             </div>
+            <div className="space-y-2">
+              <Label>Number of Speakers</Label>
+              <Input
+                type="number"
+                min="1"
+                max="20"
+                placeholder="Auto-detect"
+                value={numSpeakers}
+                onChange={(e) => setNumSpeakers(e.target.value)}
+              />
+            </div>
             {error && (
               <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3">
                 <p className="text-sm text-red-400">{error}</p>
@@ -85,6 +114,34 @@ export function NewJobPage() {
                 <Sparkles className="h-4 w-4" />
               )}
               {submitting ? "Uploading..." : "Start Processing"}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+      <Card className="mx-auto max-w-lg mt-6">
+        <CardHeader>
+          <CardTitle className="text-xl">From Teams Link</CardTitle>
+          <CardDescription>Paste a Teams meeting recap or SharePoint recording link — the file is fetched from OneDrive automatically</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleLinkSubmit} className="space-y-4">
+            <Input
+              placeholder="https://teams.microsoft.com/l/meetingrecap?... or SharePoint link"
+              value={link}
+              onChange={(e) => setLink(e.target.value)}
+            />
+            {linkError && (
+              <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3">
+                <p className="text-sm text-red-400">{linkError}</p>
+              </div>
+            )}
+            <Button type="submit" variant="secondary" className="w-full" disabled={!link.trim() || linkSubmitting}>
+              {linkSubmitting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Link2 className="h-4 w-4" />
+              )}
+              {linkSubmitting ? "Fetching..." : "Fetch & Process"}
             </Button>
           </form>
         </CardContent>

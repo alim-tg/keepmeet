@@ -35,9 +35,15 @@ def cli():
 @click.option("--output-dir", "-o", default="./output",
               type=click.Path(),
               help="Directory for output files.")
+@click.option("--num-speakers", type=int, default=None,
+              help="Exact number of speakers (overrides min/max).")
+@click.option("--min-speakers", type=int, default=None,
+              help="Minimum number of speakers.")
+@click.option("--max-speakers", type=int, default=None,
+              help="Maximum number of speakers.")
 def process(audio_file, meeting_date, language, speaker_profile,
             skip_diarization, skip_format, skip_publish, skip_speaker_prompt,
-            output_dir):
+            output_dir, num_speakers, min_speakers, max_speakers):
     try:
         config = load_config()
     except ConfigError as e:
@@ -59,6 +65,9 @@ def process(audio_file, meeting_date, language, speaker_profile,
         skip_format=skip_format,
         skip_publish=skip_publish,
         skip_speaker_prompt=skip_speaker_prompt,
+        num_speakers=num_speakers,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
     )
 
     try:
@@ -108,6 +117,95 @@ def speakers_cmd(profile):
 
     save_speaker_map(profile, updated)
     click.echo(f"Saved to {profile}")
+
+
+@cli.group()
+def teams():
+    pass
+
+
+@teams.command("login")
+def teams_login():
+    from . import msgraph
+
+    try:
+        config = load_config()
+    except ConfigError as e:
+        raise click.ClickException(str(e))
+
+    try:
+        result = msgraph.device_login(config, echo=click.echo)
+    except msgraph.GraphError as e:
+        raise click.ClickException(str(e))
+
+    username = result.get("id_token_claims", {}).get("preferred_username", "unknown")
+    click.echo(f"\nSigned in as {username}")
+    click.echo("The server will now auto-ingest new Teams recordings from the sources enabled in Settings.")
+
+
+@teams.command("status")
+def teams_status():
+    import json as _json
+
+    from . import msgraph
+    from .server.teams_watcher import STATE_PATH
+
+    try:
+        config = load_config()
+    except ConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .settings import load_settings
+
+    settings = load_settings(config)
+    configured = bool(config.graph_client_id and config.graph_tenant_id)
+    click.echo(f"Configured (GRAPH_CLIENT_ID/GRAPH_TENANT_ID): {'yes' if configured else 'no'}")
+    click.echo(f"Watcher enabled: {'yes' if settings['watcher_enabled'] else 'no'}")
+    click.echo(f"Sources: {', '.join(k for k, v in settings['sources'].items() if v) or 'none'}")
+    click.echo(f"Meeting filter: {settings['meeting_filter'] or '(all meetings)'}")
+    click.echo(f"Publish mode: {settings['publish_mode']}")
+    click.echo(f"Recordings folder: {settings['recordings_folder']}")
+    click.echo(f"Poll interval: {settings['poll_interval_seconds']}s")
+
+    if configured:
+        try:
+            account = msgraph.get_account(config)
+            click.echo(f"Signed in: {account['username'] if account else 'no (run: keepmeet teams login)'}")
+            if account:
+                chat = msgraph.acquire_token(config, msgraph.CHAT_SCOPES)
+                click.echo(f"Chat.Read access: {'yes' if chat else 'no (run: keepmeet teams login again)'}")
+        except msgraph.GraphError as e:
+            click.echo(f"Signed in: error ({e})")
+
+    if STATE_PATH.exists():
+        state = _json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        processed = state.get("processed", {})
+        ingested = [p for p in processed.values() if p.get("job_id")]
+        click.echo(f"Tracked recordings: {len(processed)} ({len(ingested)} ingested as jobs)")
+
+
+@cli.command()
+@click.option("--no-browser", is_flag=True, help="Do not open the web UI in a browser")
+def app(no_browser):
+    from .launcher import run_app
+
+    try:
+        run_app(echo=click.echo, open_browser=not no_browser)
+    except RuntimeError as e:
+        raise click.ClickException(str(e))
+
+
+@cli.command()
+def shortcut():
+    from .launcher import install_shortcuts
+
+    try:
+        paths = install_shortcuts()
+    except RuntimeError as e:
+        raise click.ClickException(str(e))
+    for path in paths:
+        click.echo(f"Created {path}")
+    click.echo("Double-click the keepmeet icon to start. Close its window to stop.")
 
 
 @cli.command()

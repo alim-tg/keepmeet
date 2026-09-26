@@ -25,6 +25,9 @@ class PipelineOptions:
     skip_format: bool = False
     skip_publish: bool = False
     skip_speaker_prompt: bool = False
+    num_speakers: int | None = None
+    min_speakers: int | None = None
+    max_speakers: int | None = None
 
 
 @dataclasses.dataclass
@@ -40,7 +43,12 @@ def process_meeting(
     click.echo(f"Processing: {audio_path}")
 
     click.echo("Transcribing audio (this may take a few minutes)...")
-    transcript_result = transcribe_audio(audio_path, config)
+    transcript_result = transcribe_audio(
+        audio_path, config,
+        num_speakers=options.num_speakers,
+        min_speakers=options.min_speakers,
+        max_speakers=options.max_speakers,
+    )
     click.echo(f"Transcription complete. Language: {transcript_result.language}, "
                f"Segments: {len(transcript_result.segments)}")
 

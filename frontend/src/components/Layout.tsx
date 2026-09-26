@@ -1,10 +1,17 @@
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { Link, useLocation } from "react-router-dom"
+import { usePolling } from "@/hooks/usePolling"
+import { getRecorderStatus, type RecorderStatus } from "@/api/settings"
 import { Mic } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation()
+  const [recorder, setRecorder] = useState<RecorderStatus | null>(null)
+
+  usePolling(() => {
+    getRecorderStatus().then(setRecorder).catch(() => setRecorder(null))
+  }, 3000, true)
 
   return (
     <div className="min-h-screen">
@@ -41,7 +48,27 @@ export function Layout({ children }: { children: ReactNode }) {
             >
               Profiles
             </Link>
+            <Link
+              to="/settings"
+              className={cn(
+                "px-3 py-1.5 rounded-md text-sm font-medium transition-colors no-underline",
+                pathname === "/settings"
+                  ? "text-white bg-white/[0.08]"
+                  : "text-muted-foreground hover:text-white hover:bg-white/[0.04]"
+              )}
+            >
+              Settings
+            </Link>
           </nav>
+          {recorder?.recording && (
+            <Link
+              to="/settings"
+              className="ml-auto inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-xs font-semibold text-red-400 no-underline"
+            >
+              <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
+              REC{recorder.meeting_name ? ` · ${recorder.meeting_name}` : ""}
+            </Link>
+          )}
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-6 py-8">{children}</main>

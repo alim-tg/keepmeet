@@ -16,6 +16,8 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "python-multipart>=0.0.9",
     "imageio-ffmpeg>=0.6.0",
+    "msal>=1.28",
+    "pyaudiowpatch>=0.2.12.8",
 ]
 
 [project.scripts]

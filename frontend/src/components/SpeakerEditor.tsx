@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Save, RefreshCw, UserPlus, Loader2, Check, ChevronDown, ChevronUp } from "lucide-react"
+import { Save, RefreshCw, UserPlus, Loader2, Check, ChevronDown, ChevronUp, Mic, Sparkles } from "lucide-react"
 import type { JobDetail } from "@/api/jobs"
 import { createProfileFromJob } from "@/api/profiles"
 
@@ -68,6 +68,13 @@ export function SpeakerEditor({ job, onSave, onReformat, saving, reformatting }:
 
   return (
     <div className="space-y-5">
+      <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-xs text-muted-foreground">
+        <Sparkles className="h-3.5 w-3.5 mt-0.5 shrink-0 text-primary" />
+        <span>
+          Type the real names and click <span className="text-foreground">Save Names</span>. keepmeet remembers each voice,
+          so these people are recognized automatically in the next meetings. The more meetings you confirm, the more accurate it gets.
+        </span>
+      </div>
       {job.speakers.map((spk) => {
         const match = matched[spk]
         const isExpanded = expandedProfile === spk
@@ -78,10 +85,14 @@ export function SpeakerEditor({ job, onSave, onReformat, saving, reformatting }:
         return (
           <div key={spk} className="space-y-2 rounded-xl bg-white/[0.02] border border-white/[0.04] p-4">
             <div className="flex items-center gap-2">
-              <Label className="text-xs text-muted-foreground font-mono">{spk}</Label>
-              {match && (
+              <Label className="text-xs text-muted-foreground font-mono">{spk === "SELF" ? "YOU" : spk}</Label>
+              {match?.self ? (
+                <Badge variant="default" className="text-xs gap-1">
+                  <Mic className="h-3 w-3" /> You · from your microphone
+                </Badge>
+              ) : match && (
                 <Badge variant="secondary" className="text-xs gap-1">
-                  {match.name} - {Math.round(match.confidence * 100)}%
+                  {match.name} - {Math.round(match.confidence * 100)}%{match.merged ? " · merged" : ""}
                 </Badge>
               )}
               {match?.role && (

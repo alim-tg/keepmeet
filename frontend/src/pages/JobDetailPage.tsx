@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from "react"
+import { toast } from "sonner"
 import { useParams, useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -64,6 +65,10 @@ export function JobDetailPage() {
     try {
       const res = await updateSpeakers(id, map)
       setJob((prev) => prev ? { ...prev, speaker_map: map, raw_transcript: res.raw_transcript } : prev)
+      const named = Object.entries(map).filter(([spk, name]) => name && name !== spk).length
+      if (named) toast.success(`Names saved. keepmeet will recognize ${named === 1 ? "this voice" : `these ${named} voices`} next time.`)
+    } catch (e) {
+      toast.error((e as Error).message)
     } finally {
       setSaving(false)
     }
@@ -153,6 +158,14 @@ export function JobDetailPage() {
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Processing failed</AlertTitle>
           <AlertDescription>{job.error}</AlertDescription>
+        </Alert>
+      )}
+
+      {job.status === "completed" && job.publish_status === "publish_failed" && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Auto-publish failed</AlertTitle>
+          <AlertDescription>{job.publish_error}</AlertDescription>
         </Alert>
       )}
 

@@ -1,13 +1,28 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .jobs import resume_interrupted_jobs
+from .local_recorder import shutdown_local_recorder, start_local_recorder
 from .routes import router
+from .teams_watcher import start_watcher
 
 app = FastAPI(title="keepmeet-ai")
+
+
+@app.on_event("startup")
+def _startup():
+    resume_interrupted_jobs()
+    start_watcher()
+    start_local_recorder()
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    shutdown_local_recorder()
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,6 +31,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _no_cache_api(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 app.include_router(router)
 

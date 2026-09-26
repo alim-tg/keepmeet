@@ -49,6 +49,8 @@ def list_jobs() -> list[dict]:
                 "meeting_date": data["meeting_date"],
                 "language": data.get("language"),
                 "created_at": data["created_at"],
+                "source": data.get("source"),
+                "publish_status": data.get("publish_status"),
             })
         except (json.JSONDecodeError, KeyError):
             continue

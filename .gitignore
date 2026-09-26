@@ -14,3 +14,4 @@ data/
 frontend/node_modules/
 frontend/dist/
 .claude/
+speaker_profiles/*/
