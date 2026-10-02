@@ -8,10 +8,10 @@ import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ProcessingProgress } from "@/components/ProcessingProgress"
-import { MarkdownRenderer } from "@/components/MarkdownRenderer"
 import { CopyButton } from "@/components/CopyButton"
 import { SpeakerEditor } from "@/components/SpeakerEditor"
 import { ConfluencePublishCard } from "@/components/ConfluencePublishCard"
+import { NotesPanel } from "@/components/NotesPanel"
 import { AudioPlayer, type AudioPlayerHandle } from "@/components/AudioPlayer"
 import { TranscriptView } from "@/components/TranscriptView"
 import { usePolling } from "@/hooks/usePolling"
@@ -19,10 +19,12 @@ import {
   getJob,
   deleteJob,
   updateSpeakers,
+  retryJob,
+  retranscribeJob,
   reformatJob,
   type JobDetail,
 } from "@/api/jobs"
-import { AlertCircle, Trash2, ArrowLeft, Calendar, Languages } from "lucide-react"
+import { AlertCircle, Trash2, ArrowLeft, Calendar, Languages, RotateCcw, AudioLines } from "lucide-react"
 
 export function JobDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -34,6 +36,7 @@ export function JobDetailPage() {
   const [reformatting, setReformatting] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [audioTime, setAudioTime] = useState(0)
+  const [retrying, setRetrying] = useState(false)
   const audioRef = useRef<AudioPlayerHandle>(null)
 
   const isProcessing = job?.status === "processing" || job?.status === "pending"
@@ -52,6 +55,37 @@ export function JobDetailPage() {
     true
   )
 
+  const handleRetry = async () => {
+    if (!id) return
+    setRetrying(true)
+    try {
+      await retryJob(id)
+      setJob((prev) => prev ? { ...prev, status: "processing", error: null } : prev)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setRetrying(false)
+    }
+  }
+
+  const handleRetranscribe = async () => {
+    if (!id) return
+    if (job?.status === "completed" && !confirm("Transcribe this meeting again from the audio? The transcript, speaker names and notes will be replaced. The Confluence page link is kept.")) return
+    setRetrying(true)
+    try {
+      await retranscribeJob(id)
+      setJob((prev) => prev ? {
+        ...prev, status: "pending", stage: null, error: null,
+        formatted_notes: null, raw_transcript: null, segments: [], speakers: [], speaker_map: {},
+      } : prev)
+      toast.success("Transcribing again from the saved audio")
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setRetrying(false)
+    }
+  }
+
   const handleDelete = async () => {
     if (!id || !confirm("Delete this job?")) return
     setDeleting(true)
@@ -65,8 +99,14 @@ export function JobDetailPage() {
     try {
       const res = await updateSpeakers(id, map)
       setJob((prev) => prev ? { ...prev, speaker_map: map, raw_transcript: res.raw_transcript } : prev)
+      setJob((prev) => prev ? {
+        ...prev,
+        name_suggestions: Object.fromEntries(Object.entries(prev.name_suggestions ?? {}).filter(([spk]) => (map[spk] ?? spk) === spk)),
+      } : prev)
       const named = Object.entries(map).filter(([spk, name]) => name && name !== spk).length
-      if (named) toast.success(`Names saved. keepmeet will recognize ${named === 1 ? "this voice" : `these ${named} voices`} next time.`)
+      if (named) toast.success(`Names saved. keepmeet will recognize ${named === 1 ? "this voice" : `these ${named} voices`} next time.`, {
+        action: { label: "Regenerate notes", onClick: () => handleReformat() },
+      })
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -74,20 +114,32 @@ export function JobDetailPage() {
     }
   }
 
-  const handleReformat = async () => {
+  const handleReformat = async (context?: string) => {
     if (!id) return
     setReformatting(true)
+    setTab("notes")
     try {
-      const res = await reformatJob(id)
-      setJob((prev) => prev ? { ...prev, formatted_notes: res.formatted_notes, status: "completed" } : prev)
-      setTab("notes")
+      const res = await reformatJob(id, context)
+      setJob((prev) => prev ? {
+        ...prev,
+        formatted_notes: res.formatted_notes,
+        name_suggestions: res.name_suggestions,
+        notes_edited: res.notes_edited,
+        notes_context: context ?? prev.notes_context,
+        status: "completed",
+      } : prev)
+      const found = Object.keys(res.name_suggestions).length
+      if (found) toast.message(`Claude recognized ${found} name${found > 1 ? "s" : ""} from the conversation. Check the Speakers tab to confirm.`)
+    } catch (e) {
+      toast.error((e as Error).message)
     } finally {
       setReformatting(false)
     }
   }
 
-  const handlePublished = (url: string) => {
-    setJob((prev) => prev ? { ...prev, confluence_url: url } : prev)
+  const handlePublished = (url: string, title: string) => {
+    setJob((prev) => prev ? { ...prev, confluence_url: url, publish_title: title, publish_status: "published" } : prev)
+    toast.success("Published to Confluence")
   }
 
   if (loading) {
@@ -157,7 +209,21 @@ export function JobDetailPage() {
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Processing failed</AlertTitle>
-          <AlertDescription>{job.error}</AlertDescription>
+          <AlertDescription>
+            <div>{job.error}</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {job.raw_transcript && (
+                <Button size="sm" variant="secondary" onClick={handleRetry} disabled={retrying}>
+                  <RotateCcw className={`h-3.5 w-3.5 ${retrying ? "animate-spin" : ""}`} />
+                  Retry notes only
+                </Button>
+              )}
+              <Button size="sm" variant="secondary" onClick={handleRetranscribe} disabled={retrying}>
+                <AudioLines className="h-3.5 w-3.5" />
+                Re-transcribe from audio
+              </Button>
+            </div>
+          </AlertDescription>
         </Alert>
       )}
 
@@ -179,19 +245,14 @@ export function JobDetailPage() {
             </TabsList>
 
             <TabsContent value="notes">
-              <Card>
-                <CardHeader className="flex-row items-center justify-between space-y-0">
-                  <CardTitle>Meeting Notes</CardTitle>
-                  {job.formatted_notes && <CopyButton text={job.formatted_notes} />}
-                </CardHeader>
-                <CardContent>
-                  {job.formatted_notes ? (
-                    <MarkdownRenderer content={job.formatted_notes} />
-                  ) : (
-                    <p className="text-muted-foreground">No formatted notes yet</p>
-                  )}
-                </CardContent>
-              </Card>
+              <NotesPanel
+                key={`${job.job_id}-${job.formatted_notes?.length ?? 0}`}
+                job={job}
+                reformatting={reformatting}
+                onRegenerate={(context) => handleReformat(context)}
+                onNotesSaved={(notes) => setJob((prev) => prev ? { ...prev, formatted_notes: notes, notes_edited: true } : prev)}
+                onGoToSpeakers={() => setTab("speakers")}
+              />
             </TabsContent>
 
             <TabsContent value="transcript">
@@ -226,7 +287,7 @@ export function JobDetailPage() {
                   <SpeakerEditor
                     job={job}
                     onSave={handleSaveSpeakers}
-                    onReformat={handleReformat}
+                    onReformat={() => handleReformat()}
                     saving={saving}
                     reformatting={reformatting}
                   />
@@ -237,13 +298,19 @@ export function JobDetailPage() {
 
           <ConfluencePublishCard
             jobId={job.job_id}
+            defaultTitle={job.publish_title ?? job.title}
             confluenceUrl={job.confluence_url}
             onPublished={handlePublished}
           />
         </>
       )}
 
-      <div className="flex justify-end pt-2 pb-8">
+      <div className="flex justify-end gap-2 pt-2 pb-8">
+        {(job.status === "completed" || job.status === "failed") && (
+          <Button variant="ghost" size="sm" onClick={handleRetranscribe} disabled={retrying} className="text-muted-foreground">
+            <AudioLines className="h-3.5 w-3.5" /> Re-transcribe
+          </Button>
+        )}
         <Button variant="ghost" size="sm" onClick={handleDelete} disabled={deleting} className="text-muted-foreground hover:text-red-400">
           <Trash2 className="h-3.5 w-3.5" /> {deleting ? "Deleting..." : "Delete"}
         </Button>

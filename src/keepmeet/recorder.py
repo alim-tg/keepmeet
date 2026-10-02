@@ -2,6 +2,7 @@ import ctypes
 import logging
 import subprocess
 import threading
+import time
 import wave
 from collections import Counter
 from ctypes import wintypes
@@ -18,6 +19,7 @@ TEAMS_NAV = {
     "people", "copilot", "communities", "assignments", "microsoft teams", "new teams",
 }
 FRAMES_PER_BUFFER = 1024
+SOUND_RMS_THRESHOLD = 100
 
 
 class RecorderError(Exception):
@@ -143,6 +145,7 @@ class AudioRecorder:
         self._tracks: list[Path] = []
         self._lock = threading.Lock()
         self.mic_error: str | None = None
+        self.last_sound = time.monotonic()
 
     def start(self):
         import pyaudiowpatch as pa
@@ -154,7 +157,7 @@ class AudioRecorder:
             loopback = self._pa.get_default_wasapi_loopback()
             output = self._pa.get_device_info_by_index(wasapi["defaultOutputDevice"])
             self._open_silence(output)
-            self._open_capture(loopback, self.out_dir / "system.wav")
+            self._open_capture(loopback, self.out_dir / "system.wav", track_sound=True)
             if self.include_mic:
                 try:
                     mic = self._pa.get_device_info_by_index(wasapi["defaultInputDevice"])
@@ -166,7 +169,8 @@ class AudioRecorder:
             self.close()
             raise RecorderError(f"Could not start audio capture: {e}") from e
 
-    def _open_capture(self, device: dict, path: Path):
+    def _open_capture(self, device: dict, path: Path, track_sound: bool = False):
+        import numpy as np
         import pyaudiowpatch as pa
 
         channels = max(1, min(2, int(device["maxInputChannels"])))
@@ -180,6 +184,10 @@ class AudioRecorder:
             with self._lock:
                 if in_data:
                     wf.writeframes(in_data)
+            if track_sound and in_data:
+                samples = np.frombuffer(in_data, dtype=np.int16).astype(np.float32)
+                if samples.size and np.sqrt(np.mean(samples ** 2)) > SOUND_RMS_THRESHOLD:
+                    self.last_sound = time.monotonic()
             return (None, pa.paContinue)
 
         stream = self._pa.open(

@@ -119,6 +119,43 @@ body {
 .prose li {
   margin: 0.25em 0;
 }
+.prose ul ul {
+  list-style: circle;
+  margin: 0.15em 0;
+}
+.prose ul ul ul {
+  list-style: square;
+}
+.prose ol {
+  list-style: decimal;
+  padding-left: 1.5em;
+}
+.prose ul.contains-task-list {
+  list-style: none;
+  padding-left: 0.25em;
+}
+.prose li.task-list-item input {
+  margin-right: 0.5em;
+  accent-color: #8b5cf6;
+}
+.prose table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.9em;
+}
+.prose th, .prose td {
+  border: 1px solid rgba(255,255,255,0.1);
+  padding: 0.4em 0.75em;
+  text-align: left;
+}
+.prose th {
+  background: rgba(255,255,255,0.04);
+  color: #fafafa;
+}
+.prose a {
+  color: #a78bfa;
+  text-decoration: underline;
+}
 .prose strong {
   color: #fafafa;
 }

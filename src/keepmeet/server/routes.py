@@ -9,8 +9,15 @@ from fastapi.responses import FileResponse
 
 from .. import msgraph
 from ..config import load_config
-from ..formatter import format_with_claude
-from ..publisher import publish_to_confluence
+from ..formatter import unnamed_labels
+from ..confluence_auth import (
+    ConfluenceAuthError,
+    clear_credentials,
+    current_user,
+    load_credentials,
+    save_credentials,
+)
+from ..publisher import PublishError, publish_to_confluence, resolve_target
 from ..settings import load_settings, save_settings
 from ..self_voice import SELF_SPEAKER
 from ..speaker_profiles import (
@@ -25,13 +32,16 @@ from ..speaker_profiles import (
 )
 from ..transcriber import TranscriptResult, format_raw_transcript
 from .ingest import parse_recording_filename, start_job_from_drive_item
-from .jobs import run_job
+from .jobs import build_notes, publish_meta, run_job
 from .models import (
     ConfigResponse,
+    ConfluenceAuthRequest,
     JobDetail,
     JobFromLinkRequest,
     JobSummary,
+    NotesUpdateRequest,
     PublishRequest,
+    ReformatRequest,
     Settings,
     SettingsUpdateRequest,
     SpeakerProfileCreateRequest,
@@ -273,7 +283,11 @@ async def update_speakers(job_id: str, body: SpeakerUpdateRequest):
     result = TranscriptResult(segments=segments, language=job.get("language", ""))
     raw_transcript = format_raw_transcript(result, body.speaker_map)
 
-    update_job(job_id, speaker_map=body.speaker_map, raw_transcript=raw_transcript)
+    suggestions = {
+        sid: name for sid, name in (job.get("name_suggestions") or {}).items()
+        if body.speaker_map.get(sid, sid) == sid
+    }
+    update_job(job_id, speaker_map=body.speaker_map, raw_transcript=raw_transcript, name_suggestions=suggestions)
     job = read_job(job_id)
     threading.Thread(target=_learn_voices, args=(job, body.speaker_map), daemon=True).start()
     return {"ok": True, "raw_transcript": raw_transcript}
@@ -295,26 +309,90 @@ def _speaker_audio_path(job: dict, speaker_id: str) -> str:
 
 
 @router.post("/jobs/{job_id}/reformat")
-async def reformat_job(job_id: str):
+def reformat_job(job_id: str, body: ReformatRequest | None = None):
     job = read_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-
-    raw_transcript = job.get("raw_transcript")
-    if not raw_transcript:
+    if not job.get("raw_transcript"):
         raise HTTPException(status_code=400, detail="No transcript available")
 
+    if body is not None and body.context is not None:
+        job = update_job(job_id, notes_context=body.context.strip())
     update_job(job_id, status="reformatting")
     try:
-        matched_profiles = job.get("matched_profiles", {})
-        formatted_notes = format_with_claude(
-            raw_transcript, job["meeting_date"], matched_profiles
-        )
-        update_job(job_id, status="completed", formatted_notes=formatted_notes)
-        return {"ok": True, "formatted_notes": formatted_notes}
+        notes_update = build_notes(job)
     except Exception as e:
         update_job(job_id, status="completed")
         raise HTTPException(status_code=500, detail=str(e))
+    update_job(job_id, status="completed", **notes_update)
+    return {"ok": True, **notes_update}
+
+
+@router.post("/jobs/{job_id}/retry")
+def retry_job(job_id: str):
+    job = read_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["status"] != "failed":
+        raise HTTPException(status_code=400, detail="Only failed jobs can be retried")
+
+    if job.get("raw_transcript") and job.get("segments"):
+        update_job(job_id, status="processing", stage="formatting", error=None)
+        threading.Thread(target=_retry_notes, args=(job_id,), daemon=True).start()
+        return {"ok": True, "mode": "notes"}
+
+    audio = job.get("audio_path")
+    if not audio or not Path(audio).exists():
+        raise HTTPException(status_code=400, detail="The recording file is missing, so this job can't be retried")
+    update_job(job_id, status="pending", stage=None, error=None)
+    run_job(job_id, audio, job["meeting_date"])
+    return {"ok": True, "mode": "full"}
+
+
+BUSY_STATUSES = ("pending", "processing", "reformatting")
+
+
+@router.post("/jobs/{job_id}/retranscribe")
+def retranscribe_job(job_id: str):
+    job = read_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["status"] in BUSY_STATUSES:
+        raise HTTPException(status_code=409, detail="This meeting is already being processed")
+    audio = job.get("audio_path")
+    if not audio or not Path(audio).exists():
+        raise HTTPException(status_code=400, detail="The recording file is missing, so it can't be transcribed again")
+
+    update_job(
+        job_id,
+        status="pending", stage=None, error=None, completed_at=None,
+        speakers=[], speaker_map={}, segments=[], raw_transcript=None,
+        formatted_notes=None, matched_profiles={}, speaker_embeddings={},
+        name_suggestions={}, notes_edited=False, learned_voices=[],
+        publish_status=None, publish_error=None,
+    )
+    run_job(job_id, audio, job["meeting_date"])
+    return {"ok": True}
+
+
+def _retry_notes(job_id: str):
+    try:
+        notes_update = build_notes(read_job(job_id))
+        update_job(
+            job_id, status="completed", stage=None,
+            completed_at=datetime.now().isoformat(timespec="seconds"), **notes_update,
+        )
+    except Exception as e:
+        logger.exception("Retrying notes failed")
+        update_job(job_id, status="failed", stage=None, error=str(e))
+
+
+@router.put("/jobs/{job_id}/notes")
+def save_notes(job_id: str, body: NotesUpdateRequest):
+    if not read_job(job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    update_job(job_id, formatted_notes=body.formatted_notes.strip(), notes_edited=True)
+    return {"ok": True, "unnamed": unnamed_labels(body.formatted_notes)}
 
 
 @router.post("/jobs/{job_id}/publish")
@@ -327,18 +405,70 @@ async def publish_job(job_id: str, body: PublishRequest):
     if not formatted_notes:
         raise HTTPException(status_code=400, detail="No formatted notes available")
 
+    title = (body.title or job.get("publish_title") or job["title"]).strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Page title is required")
+    leftover = unnamed_labels(formatted_notes)
+    if leftover:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Notes still mention unnamed speakers ({', '.join(leftover)}). Name them in the Speakers tab and regenerate, or edit the notes.",
+        )
     try:
-        config = load_config()
-        if body.space_key:
-            config.confluence_space_key = body.space_key
-        if body.parent_page_id:
-            config.confluence_parent_page_id = body.parent_page_id
-
-        url = publish_to_confluence(job["title"], formatted_notes, config)
-        update_job(job_id, confluence_url=url, publish_status="published", publish_error=None)
-        return {"ok": True, "confluence_url": url}
+        url = publish_to_confluence(title, formatted_notes, load_config(), publish_meta(job))
+    except PublishError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    update_job(
+        job_id, confluence_url=url, publish_title=title,
+        publish_status="published", publish_error=None,
+    )
+    return {"ok": True, "confluence_url": url, "title": title}
+
+
+def _confluence_status() -> dict:
+    info = {"connected": False, "user": None, "error": None, "target": None}
+    try:
+        config = load_config()
+        target = resolve_target(config)
+        info["target"] = target if target.get("base_url") else None
+        creds = load_credentials(config)
+        if creds and target.get("base_url"):
+            info["user"] = current_user(target["base_url"], *creds)
+            info["connected"] = True
+        elif creds:
+            info["error"] = "Set the Confluence folder link first"
+    except Exception as e:
+        info["error"] = str(e)
+    return info
+
+
+@router.get("/confluence/status")
+def confluence_status():
+    return _confluence_status()
+
+
+@router.post("/confluence/auth")
+def confluence_connect(body: ConfluenceAuthRequest):
+    email, token = body.email.strip(), body.token.strip()
+    if not email or not token:
+        raise HTTPException(status_code=400, detail="Email and API token are required")
+    try:
+        target = resolve_target(load_config())
+        if not target.get("base_url"):
+            raise HTTPException(status_code=400, detail="Set the Confluence folder link first")
+        current_user(target["base_url"], email, token)
+    except (ConfluenceAuthError, PublishError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    save_credentials(email, token)
+    return _confluence_status()
+
+
+@router.delete("/confluence/auth")
+def confluence_disconnect():
+    clear_credentials()
+    return _confluence_status()
 
 
 @router.get("/jobs/{job_id}/audio")

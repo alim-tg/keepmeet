@@ -125,7 +125,18 @@ def _transcribe_deepinfra_chunk(chunk_path: str, config: Config, language: str |
             timeout=600,
         )
     resp.raise_for_status()
-    return resp.json()
+    return _normalize_response(resp.json())
+
+
+def _normalize_response(data: dict | None) -> dict:
+    data = dict(data or {})
+    data["segments"] = [dict(seg) for seg in (data.get("segments") or [])]
+    for seg in data["segments"]:
+        seg["words"] = seg.get("words") or []
+        seg["text"] = seg.get("text") or ""
+    data["words"] = data.get("words") or []
+    data["language"] = data.get("language") or "en"
+    return data
 
 
 def _flip_language(lang: str) -> str:

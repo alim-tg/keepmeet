@@ -18,6 +18,7 @@ dependencies = [
     "imageio-ffmpeg>=0.6.0",
     "msal>=1.28",
     "pyaudiowpatch>=0.2.12.8",
+    "markdown-it-py>=3.0",
 ]
 
 [project.scripts]

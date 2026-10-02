@@ -11,6 +11,7 @@ export interface SourceSettings {
 export interface LocalRecorderSettings {
   enabled: boolean
   include_mic: boolean
+  auto_stop: boolean
   min_duration_seconds: number
 }
 
@@ -25,6 +26,7 @@ export interface RecorderStatus {
   mic_error: string | null
   last_error: string | null
   last_job_id: string | null
+  quiet_seconds: number
 }
 
 export interface Settings {
@@ -36,6 +38,7 @@ export interface Settings {
   publish_mode: PublishMode
   notifications: boolean
   my_name: string
+  confluence: { target_url: string }
   local_recorder: LocalRecorderSettings
 }
 

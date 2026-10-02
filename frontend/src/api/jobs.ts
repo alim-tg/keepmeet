@@ -42,6 +42,10 @@ export interface JobDetail {
   publish_error: string | null
   tracks: Record<string, string>
   learned_voices: string[]
+  publish_title: string | null
+  notes_context: string | null
+  notes_edited: boolean
+  name_suggestions: Record<string, string>
 }
 
 export interface AppConfig {
@@ -95,20 +99,45 @@ export function updateSpeakers(id: string, speakerMap: Record<string, string>) {
   })
 }
 
-export function reformatJob(id: string) {
-  return apiFetch<{ ok: boolean; formatted_notes: string }>(`/jobs/${id}/reformat`, {
+export interface NotesResult {
+  ok: boolean
+  formatted_notes: string
+  name_suggestions: Record<string, string>
+  notes_edited: boolean
+}
+
+export function reformatJob(id: string, context?: string) {
+  return apiFetch<NotesResult>(`/jobs/${id}/reformat`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(context === undefined ? {} : { context }),
   })
 }
 
-export function publishJob(id: string, spaceKey: string, parentPageId: string) {
-  return apiFetch<{ ok: boolean; confluence_url: string }>(`/jobs/${id}/publish`, {
+export function saveNotes(id: string, formattedNotes: string) {
+  return apiFetch<{ ok: boolean; unnamed: string[] }>(`/jobs/${id}/notes`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ formatted_notes: formattedNotes }),
+  })
+}
+
+export function publishJob(id: string, title: string) {
+  return apiFetch<{ ok: boolean; confluence_url: string; title: string }>(`/jobs/${id}/publish`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ space_key: spaceKey, parent_page_id: parentPageId || null }),
+    body: JSON.stringify({ title }),
   })
 }
 
 export function getConfig() {
   return apiFetch<AppConfig>("/config")
+}
+
+export function retryJob(id: string) {
+  return apiFetch<{ ok: boolean; mode: "notes" | "full" }>(`/jobs/${id}/retry`, { method: "POST" })
+}
+
+export function retranscribeJob(id: string) {
+  return apiFetch<{ ok: boolean }>(`/jobs/${id}/retranscribe`, { method: "POST" })
 }

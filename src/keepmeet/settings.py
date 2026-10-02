@@ -21,9 +21,13 @@ DEFAULTS = {
     "publish_mode": "manual",
     "notifications": True,
     "my_name": "",
+    "confluence": {
+        "target_url": "",
+    },
     "local_recorder": {
         "enabled": False,
         "include_mic": True,
+        "auto_stop": True,
         "min_duration_seconds": 60,
     },
 }
@@ -69,9 +73,11 @@ def _validate(settings: dict) -> dict:
     settings["recordings_folder"] = str(settings["recordings_folder"] or "Recordings").strip()
     settings["sources"] = {k: bool(settings["sources"].get(k)) for k in SOURCES}
     settings["my_name"] = str(settings["my_name"] or "").strip()
+    settings["confluence"]["target_url"] = str(settings["confluence"]["target_url"] or "").strip()
     recorder = settings["local_recorder"]
     recorder["enabled"] = bool(recorder["enabled"])
     recorder["include_mic"] = bool(recorder["include_mic"])
+    recorder["auto_stop"] = bool(recorder["auto_stop"])
     recorder["min_duration_seconds"] = max(0, int(recorder["min_duration_seconds"]))
     return settings
 

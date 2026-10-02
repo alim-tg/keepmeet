@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from ..logs import setup_logging
 from .jobs import resume_interrupted_jobs
 from .local_recorder import shutdown_local_recorder, start_local_recorder
 from .routes import router
@@ -15,6 +16,7 @@ app = FastAPI(title="keepmeet-ai")
 
 @app.on_event("startup")
 def _startup():
+    setup_logging()
     resume_interrupted_jobs()
     start_watcher()
     start_local_recorder()

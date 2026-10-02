@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { usePolling } from "@/hooks/usePolling"
 import { LocalRecorderCard } from "@/components/LocalRecorderCard"
+import { ConfluenceSettingsCard } from "@/components/ConfluenceSettingsCard"
 import { Toggle } from "@/components/Toggle"
 import {
   getSettings,
@@ -57,13 +58,14 @@ function StatusLine({ ok, children }: { ok: boolean | null; children: React.Reac
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null)
+  const [saved, setSaved] = useState<Settings | null>(null)
   const [status, setStatus] = useState<TeamsStatus | null>(null)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [loggingIn, setLoggingIn] = useState(false)
 
   useEffect(() => {
-    getSettings().then(setSettings).catch((e) => toast.error((e as Error).message))
+    getSettings().then((s) => { setSettings(s); setSaved(s) }).catch((e) => toast.error((e as Error).message))
   }, [])
 
   const loginPending = status?.login?.state === "pending"
@@ -80,7 +82,9 @@ export function SettingsPage() {
     if (!settings) return
     setSaving(true)
     try {
-      setSettings(await saveSettings(settings))
+      const result = await saveSettings(settings)
+      setSettings(result)
+      setSaved(result)
       setDirty(false)
       toast.success("Settings saved")
     } catch (e) {
@@ -132,6 +136,12 @@ export function SettingsPage() {
         onChange={(v) => update("local_recorder", v)}
         myName={settings.my_name}
         onMyNameChange={(v) => update("my_name", v)}
+      />
+
+      <ConfluenceSettingsCard
+        targetUrl={settings.confluence.target_url}
+        savedTargetUrl={saved?.confluence.target_url ?? ""}
+        onTargetUrlChange={(v) => update("confluence", { target_url: v })}
       />
 
       <Card>

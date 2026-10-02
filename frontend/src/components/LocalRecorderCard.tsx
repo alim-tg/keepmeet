@@ -111,7 +111,13 @@ export function LocalRecorderCard({ settings, onChange, myName, onMyNameChange }
                   <span className="ml-2 font-mono text-muted-foreground">{elapsed(status.started_at, now)}</span>
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  {status.mode === "auto" ? "Stops automatically when the call ends" : "Started manually. Click Stop when done."}
+                  {status.mode === "auto"
+                    ? settings.auto_stop
+                      ? status.quiet_seconds > 5
+                        ? `No call audio for ${status.quiet_seconds}s, stops at 60s`
+                        : "Stops automatically when the call ends"
+                      : "Click Stop when the meeting is over"
+                    : "Started manually. Click Stop when done."}
                 </div>
               </div>
             </div>
@@ -144,6 +150,15 @@ export function LocalRecorderCard({ settings, onChange, myName, onMyNameChange }
           <p className="text-xs text-muted-foreground">
             Everything picked up by your microphone is labeled with this name. Other people are recognized by their voices.
           </p>
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.06] px-4 py-2.5">
+          <div>
+            <div className="text-sm font-medium">Stop automatically when the call ends</div>
+            <div className="text-xs text-muted-foreground">
+              Stops after 1 minute with no call audio and no microphone use by Teams. Turn off to always stop with the Stop button.
+            </div>
+          </div>
+          <Toggle checked={settings.auto_stop} onChange={(v) => onChange({ ...settings, auto_stop: v })} />
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.06] px-4 py-2.5">

@@ -9,6 +9,14 @@ Double-click the **keepmeet** icon on your Desktop or in the Start menu. A minim
 - The web UI is rebuilt automatically when frontend files change.
 - If keepmeet is closed during a call, the audio recorded so far is processed on the next start. So are jobs that were still processing when it closed.
 
+## Publishing to Confluence (one-time setup)
+
+1. **Settings → Confluence → Publish folder:** paste the folder link (e.g. `https://yourcompany.atlassian.net/wiki/spaces/TEAM/folder/123456/Meeting+Notes`) and click **Save**.
+2. Create an Atlassian API token at https://id.atlassian.com/manage-profile/security/api-tokens, enter your Atlassian email and the token, then click **Connect**. The token is stored encrypted (Windows DPAPI) in `data/confluence_auth.json` and only works for your Windows account.
+3. On a meeting, the **Confluence** card shows a generated page title (meeting name and date). Edit it if you like, then click **Publish**. Publishing again with the same title updates the existing page instead of creating a duplicate.
+
+Notes are always written in English, whatever language was spoken. People's names, technical terms and ticket IDs are kept as they are.
+
 There are two independent ways to get meetings in automatically. Use either one, or both.
 
 ## Option A: Record from this PC (no setup)

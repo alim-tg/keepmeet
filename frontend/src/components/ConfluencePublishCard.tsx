@@ -1,42 +1,45 @@
 import { useEffect, useState } from "react"
+import { Link } from "react-router-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { getConfig, publishJob } from "@/api/jobs"
-import { ExternalLink, Globe, Loader2 } from "lucide-react"
+import { publishJob } from "@/api/jobs"
+import { getConfluenceStatus, type ConfluenceStatus } from "@/api/confluence"
+import { ExternalLink, Folder, Globe, Loader2 } from "lucide-react"
 
 interface ConfluencePublishCardProps {
   jobId: string
+  defaultTitle: string
   confluenceUrl: string | null
-  onPublished: (url: string) => void
+  onPublished: (url: string, title: string) => void
 }
 
-export function ConfluencePublishCard({ jobId, confluenceUrl, onPublished }: ConfluencePublishCardProps) {
-  const [spaceKey, setSpaceKey] = useState("")
-  const [parentPageId, setParentPageId] = useState("")
+export function ConfluencePublishCard({ jobId, defaultTitle, confluenceUrl, onPublished }: ConfluencePublishCardProps) {
+  const [title, setTitle] = useState(defaultTitle)
+  const [status, setStatus] = useState<ConfluenceStatus | null>(null)
   const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState("")
 
   useEffect(() => {
-    getConfig().then((cfg) => {
-      setSpaceKey(cfg.confluence_space_key)
-      setParentPageId(cfg.confluence_parent_page_id ?? "")
-    }).catch(() => {})
+    getConfluenceStatus().then(setStatus).catch(() => {})
   }, [])
 
   const handlePublish = async () => {
     setPublishing(true)
     setError("")
     try {
-      const res = await publishJob(jobId, spaceKey, parentPageId)
-      onPublished(res.confluence_url)
+      const res = await publishJob(jobId, title.trim())
+      onPublished(res.confluence_url, res.title)
     } catch (e) {
       setError((e as Error).message)
     } finally {
       setPublishing(false)
     }
   }
+
+  const target = status?.target
+  const ready = status?.connected && target
 
   return (
     <Card>
@@ -58,20 +61,31 @@ export function ConfluencePublishCard({ jobId, confluenceUrl, onPublished }: Con
             View published page
           </a>
         )}
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label>Space Key</Label>
-            <Input value={spaceKey} onChange={(e) => setSpaceKey(e.target.value)} placeholder="TEAM" />
+        {status && !ready && (
+          <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-300">
+            {status.error ?? "Confluence isn't connected yet."}{" "}
+            <Link to="/settings" className="underline">Open Settings</Link> to connect your account.
           </div>
-          <div className="space-y-2">
-            <Label>Parent Page ID</Label>
-            <Input value={parentPageId} onChange={(e) => setParentPageId(e.target.value)} placeholder="Optional" />
-          </div>
+        )}
+        <div className="space-y-2">
+          <Label>Page title</Label>
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+          <p className="text-xs text-muted-foreground">
+            Generated from the meeting name and date. Edit it if you like. Publishing again with the same title updates that page.
+          </p>
         </div>
+        {target && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Folder className="h-3.5 w-3.5" />
+            Publishes to {target.space_key}
+            {target.parent_name ? ` / ${target.parent_name}` : ""}
+            {status?.user?.name ? ` as ${status.user.name}` : ""}
+          </div>
+        )}
         {error && <p className="text-sm text-red-400">{error}</p>}
-        <Button onClick={handlePublish} disabled={publishing || !spaceKey}>
+        <Button onClick={handlePublish} disabled={publishing || !title.trim() || !ready}>
           {publishing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
-          {publishing ? "Publishing..." : "Publish"}
+          {publishing ? "Publishing..." : confluenceUrl ? "Publish again" : "Publish"}
         </Button>
       </CardContent>
     </Card>

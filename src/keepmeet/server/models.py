@@ -8,12 +8,20 @@ class SpeakerUpdateRequest(BaseModel):
 
 
 class ReformatRequest(BaseModel):
-    pass
+    context: str | None = None
+
+
+class NotesUpdateRequest(BaseModel):
+    formatted_notes: str
 
 
 class PublishRequest(BaseModel):
-    space_key: str
-    parent_page_id: str | None = None
+    title: str | None = None
+
+
+class ConfluenceAuthRequest(BaseModel):
+    email: str
+    token: str
 
 
 class JobFromLinkRequest(BaseModel):
@@ -57,6 +65,10 @@ class JobDetail(BaseModel):
     publish_error: str | None = None
     tracks: dict[str, str] = {}
     learned_voices: list[str] = []
+    publish_title: str | None = None
+    notes_context: str | None = None
+    notes_edited: bool = False
+    name_suggestions: dict[str, str] = {}
 
 
 class SpeakerProfileResponse(BaseModel):
@@ -95,7 +107,12 @@ class SourceSettings(BaseModel):
 class LocalRecorderSettings(BaseModel):
     enabled: bool = False
     include_mic: bool = True
+    auto_stop: bool = True
     min_duration_seconds: int = 60
+
+
+class ConfluenceSettings(BaseModel):
+    target_url: str = ""
 
 
 class Settings(BaseModel):
@@ -107,6 +124,7 @@ class Settings(BaseModel):
     publish_mode: Literal["manual", "auto", "auto_if_matched"]
     notifications: bool
     my_name: str = ""
+    confluence: ConfluenceSettings = ConfluenceSettings()
     local_recorder: LocalRecorderSettings
 
 
@@ -119,4 +137,5 @@ class SettingsUpdateRequest(BaseModel):
     publish_mode: Literal["manual", "auto", "auto_if_matched"] | None = None
     notifications: bool | None = None
     my_name: str | None = None
+    confluence: ConfluenceSettings | None = None
     local_recorder: LocalRecorderSettings | None = None

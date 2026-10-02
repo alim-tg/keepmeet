@@ -23,6 +23,7 @@ export function SpeakerEditor({ job, onSave, onReformat, saving, reformatting }:
   const [savedProfiles, setSavedProfiles] = useState<Set<string>>(new Set())
 
   const matched = job.matched_profiles ?? {}
+  const suggestions = job.name_suggestions ?? {}
 
   const samples: Record<string, string> = {}
   for (const seg of job.segments ?? []) {
@@ -104,6 +105,18 @@ export function SpeakerEditor({ job, onSave, onReformat, saving, reformatting }:
               onChange={(e) => setLocalMap((m) => ({ ...m, [spk]: e.target.value }))}
               placeholder="Enter speaker name..."
             />
+            {suggestions[spk] && (localMap[spk] ?? spk) === spk && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-muted-foreground">Addressed in the conversation as</span>
+                <span className="font-medium text-foreground">{suggestions[spk]}</span>
+                <button
+                  onClick={() => setLocalMap((m) => ({ ...m, [spk]: suggestions[spk] }))}
+                  className="rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-primary hover:bg-primary/20 cursor-pointer"
+                >
+                  Use
+                </button>
+              </div>
+            )}
             {match?.description && (
               <p className="text-xs text-muted-foreground/80">{match.description}</p>
             )}

@@ -28,7 +28,9 @@ RECORDINGS_DIR = DATA_DIR / "recordings"
 SESSION_FILE = "session.json"
 TRACK_NAMES = ("system.wav", "mic.wav")
 CHECK_SECONDS = 3
-END_GRACE_SECONDS = 15
+SOUND_RECENT_SECONDS = 2
+END_QUIET_SECONDS = 60
+MIC_MEMORY_SECONDS = 30 * 60
 SOURCE = "local-recorder"
 
 status: dict = {
@@ -42,6 +44,7 @@ status: dict = {
     "mic_error": None,
     "last_error": None,
     "last_job_id": None,
+    "quiet_seconds": 0,
 }
 
 _lock = threading.RLock()
@@ -68,9 +71,10 @@ def _start(mode: str):
     recorder = AudioRecorder(work_dir, include_mic=settings["include_mic"])
     recorder.start()
     _recorder = recorder
+    now = time.monotonic()
     _session = {
         "dir": work_dir, "started": started, "last_active": started,
-        "names": Counter(), "idle_since": None,
+        "names": Counter(), "last_signal": now, "last_mic": now, "window_seen": False,
     }
     status.update(
         recording=True, mode=mode, started_at=started.isoformat(timespec="seconds"),
@@ -78,18 +82,22 @@ def _start(mode: str):
     )
     _collect_name()
     _save_session()
+    logger.info(f"Recording started ({mode})")
     notify("Recording Teams call", "keepmeet is recording this call's audio")
 
 
-def _collect_name():
+def _collect_name() -> bool:
+    found = False
     try:
         for title in teams_window_titles():
             name = meeting_name_from_title(title)
             if name:
                 _session["names"][name] += 1
+                found = True
         status["meeting_name"] = pick_meeting_name(_session["names"])
     except Exception:
-        pass
+        logger.exception("Could not read Teams window titles")
+    return found
 
 
 def _finalize(work_dir: Path, started: datetime, duration: float, meeting_name: str | None) -> str | None:
@@ -131,6 +139,7 @@ def _finish() -> str | None:
         return None
 
     recorder.close()
+    logger.info(f"Recording stopped ({mode})")
     started: datetime = session["started"]
     ended = session["last_active"] if mode == "auto" else datetime.now()
     return _finalize(
@@ -143,6 +152,8 @@ def _tick():
     settings = load_settings()["local_recorder"]
     status["enabled"] = settings["enabled"]
     in_call = teams_using_mic()
+    if in_call != status["teams_in_call"]:
+        logger.info(f"Teams microphone {'in use' if in_call else 'released'}")
     status["teams_in_call"] = in_call
 
     with _lock:
@@ -151,17 +162,24 @@ def _tick():
                 _start("auto")
             return
 
-        _collect_name()
-        if status["mode"] == "auto":
-            if in_call:
-                _session["idle_since"] = None
-                _session["last_active"] = datetime.now()
-            elif _session["idle_since"] is None:
-                _session["idle_since"] = time.monotonic()
-            elif time.monotonic() - _session["idle_since"] >= END_GRACE_SECONDS:
-                _finish()
-                return
-        else:
+        now = time.monotonic()
+        meeting_window = _collect_name()
+        if in_call:
+            _session["last_mic"] = now
+        sound = now - _recorder.last_sound < SOUND_RECENT_SECONDS
+        mic_recent = now - _session["last_mic"] < MIC_MEMORY_SECONDS
+        alive = in_call or (sound and (meeting_window or mic_recent))
+        if alive:
+            _session["last_signal"] = now
+            _session["last_active"] = datetime.now()
+        quiet = now - _session["last_signal"]
+        status["quiet_seconds"] = int(quiet)
+
+        if status["mode"] == "auto" and settings["auto_stop"] and quiet >= END_QUIET_SECONDS:
+            logger.info(f"Call looks finished: mic released and {int(quiet)}s without call audio")
+            _finish()
+            return
+        if status["mode"] != "auto":
             _session["last_active"] = datetime.now()
         _save_session()
 
@@ -180,6 +198,7 @@ def start_manual():
     with _lock:
         if _recorder is not None:
             status["mode"] = "manual"
+            logger.info("Auto recording switched to manual")
             return
         _start("manual")
 
