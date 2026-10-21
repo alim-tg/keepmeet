@@ -9,7 +9,8 @@ from ..notifier import job_url, notify
 from ..publisher import publish_to_confluence
 from ..settings import load_settings
 from ..self_voice import SELF_SPEAKER
-from ..speaker_profiles import find_profile_by_name, match_speakers
+from ..speaker_id import combine, identify_from_conversation
+from ..speaker_profiles import find_profile_by_name, match_speakers, reinforce_profiles
 from ..transcriber import (
     TranscriptResult,
     extract_speakers,
@@ -32,19 +33,86 @@ def _minus_self(count: int | None) -> int | None:
     return None if count is None else max(1, count - 1)
 
 
+def _roster(config, my_name: str) -> list[str]:
+    from ..formatter import SPEAKER_LABEL_RE
+    from ..speaker_profiles import list_profiles
+
+    names = [my_name] + [p.name for p in list_profiles(config)]
+    for summary in list_jobs()[:30]:
+        job = read_job(summary["job_id"]) or {}
+        names += [n for n in (job.get("speaker_map") or {}).values() if n and not SPEAKER_LABEL_RE.fullmatch(n)]
+    return list(dict.fromkeys(n for n in names if n and n != "Me"))
+
+
+def identify_speakers(job_id, result, speakers, config, my_name, audio, self_audio):
+    speaker_map = {s: s for s in speakers}
+    embeddings: dict = {}
+    voice: dict = {}
+    voice_scores: dict = {}
+    same_voice: dict = {}
+    try:
+        match = match_speakers(result.segments, speakers, config, audio=audio, self_audio=self_audio)
+        embeddings = match["speaker_embeddings"]
+        voice = {k: v for k, v in match["matched_profiles"].items() if k != SELF_SPEAKER}
+        voice_scores = match["voice_scores"]
+        same_voice = match["same_voice"]
+    except Exception:
+        logger.exception("Voice matching failed")
+
+    labels = [s for s in speakers if s != SELF_SPEAKER]
+    transcript = format_raw_transcript(result, {SELF_SPEAKER: my_name})
+    conversation = identify_from_conversation(transcript, labels, _roster(config, my_name), voice_scores, my_name)
+    decided = combine(labels, voice, conversation, same_voice)
+
+    if SELF_SPEAKER in speakers:
+        me = find_profile_by_name(config, my_name)
+        decided[SELF_SPEAKER] = {
+            "slug": me.slug if me else None,
+            "name": my_name,
+            "role": me.role if me else "",
+            "description": me.description if me else "",
+            "confidence": 1.0,
+            "merged": False,
+            "self": True,
+            "source": "microphone",
+        }
+    for sid, info in decided.items():
+        speaker_map[sid] = info["name"]
+    try:
+        reinforced = reinforce_profiles(config, job_id, decided, embeddings)
+        if reinforced:
+            logger.info("Reinforced voice profiles: %s", reinforced)
+    except Exception:
+        logger.exception("Could not reinforce voice profiles")
+    return speaker_map, decided, embeddings
+
+
 def build_notes(job: dict) -> dict:
-    notes, names = generate_notes(
+    from .. import knowledge
+
+    settings = load_settings(load_config())
+    kb = knowledge.load(settings["knowledge"]["path"])
+    notes, names, used_format = generate_notes(
         job["raw_transcript"],
         job["meeting_date"],
         job.get("matched_profiles") or {},
         job.get("notes_context"),
+        title=job.get("title"),
+        format_key=job.get("note_format_override"),
+        knowledge=kb,
+        lookups=settings["knowledge"]["lookups"],
     )
     speaker_map = job.get("speaker_map") or {}
     suggestions = {
         sid: name for sid, name in names.items()
         if sid in speaker_map and speaker_map[sid] == sid
     }
-    return {"formatted_notes": notes, "name_suggestions": suggestions, "notes_edited": False}
+    return {
+        "formatted_notes": notes,
+        "name_suggestions": suggestions,
+        "notes_edited": False,
+        "note_format": used_format,
+    }
 
 
 def run_job(job_id: str, audio_path: str, meeting_date: str,
@@ -92,33 +160,12 @@ def _process(job_id: str, audio_path: str, meeting_date: str,
         speaker_map = {s: s for s in speakers}
 
         update_job(job_id, stage="matching_speakers")
-        matched_profiles = {}
-        speaker_embeddings = {}
-        try:
-            match_result = match_speakers(
-                result.segments, speakers, config,
-                audio=load_waveform(system_track or audio_path),
-                self_audio=load_waveform(mic_track) if mic_track else None,
-            )
-            speaker_map = match_result["speaker_map"]
-            matched_profiles = match_result["matched_profiles"]
-            speaker_embeddings = match_result["speaker_embeddings"]
-        except Exception:
-            logger.exception("Speaker matching failed")
-
-        if SELF_SPEAKER in speaker_map:
-            my_name = settings["my_name"] or "Me"
-            speaker_map[SELF_SPEAKER] = my_name
-            me = find_profile_by_name(config, my_name)
-            matched_profiles[SELF_SPEAKER] = {
-                "slug": me.slug if me else None,
-                "name": my_name,
-                "role": me.role if me else "",
-                "description": me.description if me else "",
-                "confidence": 1.0,
-                "merged": False,
-                "self": True,
-            }
+        my_name = settings["my_name"] or "Me"
+        speaker_map, matched_profiles, speaker_embeddings = identify_speakers(
+            job_id, result, speakers, config, my_name,
+            audio=load_waveform(system_track or audio_path),
+            self_audio=load_waveform(mic_track) if mic_track else None,
+        )
 
         raw_transcript = format_raw_transcript(result, speaker_map)
 
@@ -130,6 +177,7 @@ def _process(job_id: str, audio_path: str, meeting_date: str,
             segments=[s for s in result.segments],
             raw_transcript=raw_transcript,
             language=result.language,
+            languages=result.languages,
             matched_profiles=matched_profiles,
             speaker_embeddings=speaker_embeddings,
         )

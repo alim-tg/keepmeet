@@ -29,6 +29,12 @@ export interface RecorderStatus {
   quiet_seconds: number
 }
 
+export interface TranscriptionSettings {
+  model: "whisper-large-v3" | "whisper-large-v3-turbo"
+  languages: string[]
+  vocabulary: string
+}
+
 export interface Settings {
   watcher_enabled: boolean
   poll_interval_seconds: number
@@ -39,6 +45,8 @@ export interface Settings {
   notifications: boolean
   my_name: string
   confluence: { target_url: string }
+  transcription: TranscriptionSettings
+  knowledge: { path: string; lookups: boolean }
   local_recorder: LocalRecorderSettings
 }
 
@@ -99,4 +107,20 @@ export function startRecording() {
 
 export function stopRecording() {
   return apiFetch<{ ok: boolean; job_id: string | null }>("/recorder/stop", { method: "POST" })
+}
+
+export function getSuggestedTerms() {
+  return apiFetch<{ terms: string[] }>("/transcription/suggested-terms")
+}
+
+export interface KnowledgeStatus {
+  configured: boolean
+  loaded: boolean
+  error?: string
+  digest_chars?: number
+  terms?: number
+}
+
+export function getKnowledgeStatus() {
+  return apiFetch<KnowledgeStatus>("/knowledge/status")
 }

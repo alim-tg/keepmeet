@@ -120,6 +120,11 @@ PANELS = {
     "blockers & risks": "note",
     "blockers and risks": "note",
     "risks": "note",
+    "risks & dependencies": "note",
+    "what to improve": "note",
+    "what went well": "tip",
+    "agreements": "tip",
+    "goals": "info",
 }
 TASK_RE = re.compile(r"^\[( |x|X)\]\s+")
 

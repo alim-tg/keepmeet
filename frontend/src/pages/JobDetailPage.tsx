@@ -114,18 +114,20 @@ export function JobDetailPage() {
     }
   }
 
-  const handleReformat = async (context?: string) => {
+  const handleReformat = async (context?: string, noteFormat?: string) => {
     if (!id) return
     setReformatting(true)
     setTab("notes")
     try {
-      const res = await reformatJob(id, context)
+      const res = await reformatJob(id, context, noteFormat)
       setJob((prev) => prev ? {
         ...prev,
         formatted_notes: res.formatted_notes,
         name_suggestions: res.name_suggestions,
         notes_edited: res.notes_edited,
         notes_context: context ?? prev.notes_context,
+        note_format: res.note_format,
+        note_format_override: noteFormat === undefined ? prev.note_format_override : noteFormat === "auto" ? null : noteFormat,
         status: "completed",
       } : prev)
       const found = Object.keys(res.name_suggestions).length
@@ -178,7 +180,10 @@ export function JobDetailPage() {
                 <Calendar className="h-3.5 w-3.5" /> {job.meeting_date}
               </span>
               <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
-                <Languages className="h-3.5 w-3.5" /> {job.language ?? "auto"}
+                <Languages className="h-3.5 w-3.5" />{" "}
+                {job.languages && Object.keys(job.languages).length > 1
+                  ? Object.entries(job.languages).map(([lang, share]) => `${lang} ${Math.round(share * 100)}%`).join(" · ")
+                  : job.language ?? "auto"}
               </span>
             </div>
           </div>
@@ -249,7 +254,7 @@ export function JobDetailPage() {
                 key={`${job.job_id}-${job.formatted_notes?.length ?? 0}`}
                 job={job}
                 reformatting={reformatting}
-                onRegenerate={(context) => handleReformat(context)}
+                onRegenerate={(context, noteFormat) => handleReformat(context, noteFormat)}
                 onNotesSaved={(notes) => setJob((prev) => prev ? { ...prev, formatted_notes: notes, notes_edited: true } : prev)}
                 onGoToSpeakers={() => setTab("speakers")}
               />

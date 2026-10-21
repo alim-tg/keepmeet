@@ -1,11 +1,12 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { CopyButton } from "@/components/CopyButton"
 import { MarkdownRenderer } from "@/components/MarkdownRenderer"
-import { saveNotes, type JobDetail } from "@/api/jobs"
+import { getNoteFormats, saveNotes, type JobDetail, type NoteFormatOption } from "@/api/jobs"
+import { Select } from "@/components/ui/select"
 import { AlertTriangle, Loader2, Pencil, RefreshCw, Save, X } from "lucide-react"
 
 const LABEL_RE = /\b(?:SPEAKER_\d+|SELF)\b/g
@@ -13,7 +14,7 @@ const LABEL_RE = /\b(?:SPEAKER_\d+|SELF)\b/g
 interface NotesPanelProps {
   job: JobDetail
   reformatting: boolean
-  onRegenerate: (context: string) => Promise<void>
+  onRegenerate: (context: string, noteFormat: string) => Promise<void>
   onNotesSaved: (notes: string) => void
   onGoToSpeakers: () => void
 }
@@ -26,6 +27,14 @@ export function NotesPanel({ job, reformatting, onRegenerate, onNotesSaved, onGo
   const [draft, setDraft] = useState(job.formatted_notes ?? "")
   const [saving, setSaving] = useState(false)
   const [context, setContext] = useState(job.notes_context ?? "")
+  const [formats, setFormats] = useState<NoteFormatOption[]>([])
+  const [noteFormat, setNoteFormat] = useState(job.note_format_override ?? "auto")
+
+  useEffect(() => {
+    getNoteFormats().then((r) => setFormats(r.formats)).catch(() => {})
+  }, [])
+
+  const detected = formats.find((f) => f.key === job.note_format)?.label
 
   const notes = job.formatted_notes ?? ""
   const unnamed = [...new Set(notes.match(LABEL_RE) ?? [])]
@@ -118,6 +127,18 @@ export function NotesPanel({ job, reformatting, onRegenerate, onNotesSaved, onGo
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
+            <Label>Format</Label>
+            <Select value={noteFormat} onChange={(e) => setNoteFormat(e.target.value)}>
+              <option value="auto">Auto{detected ? ` (currently ${detected})` : ""}</option>
+              {formats.map((f) => (
+                <option key={f.key} value={f.key}>{f.label}</option>
+              ))}
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {noteFormat === "auto"
+                ? "The format is picked from the meeting title and conversation."
+                : formats.find((f) => f.key === noteFormat)?.when && `For ${formats.find((f) => f.key === noteFormat)?.when}.`}
+            </p>
             <Label>Additional context for Claude</Label>
             <textarea
               className={`${textareaClass} min-h-[96px]`}
@@ -129,7 +150,7 @@ export function NotesPanel({ job, reformatting, onRegenerate, onNotesSaved, onGo
               Names you set in the Speakers tab and saved voice profiles are always used. This text is saved with the meeting.
               {job.notes_edited && " Regenerating replaces your manual edits."}
             </p>
-            <Button onClick={() => onRegenerate(context)} disabled={reformatting}>
+            <Button onClick={() => onRegenerate(context, noteFormat)} disabled={reformatting}>
               {reformatting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               {reformatting ? "Regenerating..." : "Regenerate notes"}
             </Button>

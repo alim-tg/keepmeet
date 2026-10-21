@@ -9,6 +9,7 @@ class SpeakerUpdateRequest(BaseModel):
 
 class ReformatRequest(BaseModel):
     context: str | None = None
+    note_format: str | None = None
 
 
 class NotesUpdateRequest(BaseModel):
@@ -66,7 +67,10 @@ class JobDetail(BaseModel):
     tracks: dict[str, str] = {}
     learned_voices: list[str] = []
     publish_title: str | None = None
+    languages: dict[str, float] = {}
     notes_context: str | None = None
+    note_format: str | None = None
+    note_format_override: str | None = None
     notes_edited: bool = False
     name_suggestions: dict[str, str] = {}
 
@@ -111,6 +115,17 @@ class LocalRecorderSettings(BaseModel):
     min_duration_seconds: int = 60
 
 
+class KnowledgeSettings(BaseModel):
+    path: str = ""
+    lookups: bool = True
+
+
+class TranscriptionSettings(BaseModel):
+    model: Literal["whisper-large-v3", "whisper-large-v3-turbo"] = "whisper-large-v3"
+    languages: list[str] = ["ru", "en"]
+    vocabulary: str = ""
+
+
 class ConfluenceSettings(BaseModel):
     target_url: str = ""
 
@@ -125,6 +140,8 @@ class Settings(BaseModel):
     notifications: bool
     my_name: str = ""
     confluence: ConfluenceSettings = ConfluenceSettings()
+    transcription: TranscriptionSettings = TranscriptionSettings()
+    knowledge: KnowledgeSettings = KnowledgeSettings()
     local_recorder: LocalRecorderSettings
 
 
@@ -138,4 +155,6 @@ class SettingsUpdateRequest(BaseModel):
     notifications: bool | None = None
     my_name: str | None = None
     confluence: ConfluenceSettings | None = None
+    transcription: TranscriptionSettings | None = None
+    knowledge: KnowledgeSettings | None = None
     local_recorder: LocalRecorderSettings | None = None

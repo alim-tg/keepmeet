@@ -11,13 +11,17 @@ import numpy as np
 
 from .config import Config
 from .self_voice import SELF_SPEAKER
-from .transcriber import _get_ffmpeg, load_embedding_inference, load_waveform
+from .asr.audio import ffmpeg_path, load_waveform
+from .asr.diarization import load_embedding_inference
 
 logger = logging.getLogger(__name__)
 
 MAX_EMBEDDINGS = 30
 MATCH_THRESHOLD = 0.5
-MATCH_MARGIN = 0.05
+MATCH_MARGIN = 0.08
+MERGE_MIN_SCORE = 0.75
+SAME_VOICE = 0.70
+REINFORCE_MIN_SCORE = 0.80
 MIN_CROP_SECONDS = 1.5
 MAX_CROP_SECONDS = 10.0
 CROPS_PER_SPEAKER = 12
@@ -203,7 +207,7 @@ def extract_voice_sample(
     if not selected:
         return None
 
-    ffmpeg = _get_ffmpeg()
+    ffmpeg = ffmpeg_path()
     profile_dir = profile_dir.resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
     out_path = profile_dir / "voice_sample.wav"
@@ -358,6 +362,11 @@ def match_speakers(
         "speaker_map": speaker_map,
         "matched_profiles": matched_profiles,
         "speaker_embeddings": {k: v.tolist() for k, v in centroids.items()},
+        "voice_scores": {},
+        "same_voice": {
+            (a, b): round(float(centroids[a] @ centroids[b]), 3)
+            for a in centroids for b in centroids if a < b
+        },
     }
     profiles = [p for p in list_profiles(config) if p.embedding is not None]
     candidates = [sid for sid in centroids if sid != SELF_SPEAKER]
@@ -394,13 +403,19 @@ def match_speakers(
         _record(sid, by_slug[slug], score, merged=False)
         used_slugs.add(slug)
 
+    owner = {info["slug"]: sid for sid, info in matched_profiles.items()}
     for sid in candidates:
         if sid in matched_profiles:
             continue
         slug, score = max(scores[sid].items(), key=lambda kv: kv[1])
-        if slug in used_slugs and score >= threshold:
+        primary = owner.get(slug)
+        if primary and score >= MERGE_MIN_SCORE and float(centroids[sid] @ centroids[primary]) >= SAME_VOICE:
             _record(sid, by_slug[slug], score, merged=True)
 
+    result["voice_scores"] = {
+        sid: {by_slug[slug].name: round(score, 3) for slug, score in row.items()}
+        for sid, row in scores.items()
+    }
     return result
 
 
@@ -457,3 +472,23 @@ def learn_from_job(config: Config, job: dict, speaker_map: dict[str, str]) -> li
                 logger.exception("Could not extract voice sample")
         learned.append(profile.name)
     return learned
+
+
+def reinforce_profiles(config: Config, job_id: str, decided: dict[str, dict], embeddings: dict[str, list]) -> list[str]:
+    reinforced = []
+    for sid, info in decided.items():
+        strong_voice = info.get("source") == "voice" and (info.get("confidence") or 0) >= REINFORCE_MIN_SCORE
+        if sid not in embeddings or info.get("merged") or not (strong_voice or sid == SELF_SPEAKER):
+            continue
+        profile = find_profile_by_name(config, info["name"])
+        if profile is None:
+            if sid != SELF_SPEAKER:
+                continue
+            profile = save_profile(config, info["name"], "", "", None)
+        source = {"job": job_id, "speaker": sid, "auto": True}
+        if source in profile.sources:
+            continue
+        _add_embeddings(profile, [np.asarray(embeddings[sid], dtype=np.float32)], source)
+        _write_profile(config, profile)
+        reinforced.append(profile.name)
+    return reinforced

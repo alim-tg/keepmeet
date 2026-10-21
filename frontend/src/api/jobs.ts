@@ -29,13 +29,15 @@ export interface JobDetail {
   formatted_notes: string | null
   confluence_url: string | null
   matched_profiles: Record<string, {
-    slug: string
+    slug: string | null
     name: string
-    role: string
-    description: string
-    confidence: number
+    role?: string
+    description?: string
+    confidence: number | null
     merged?: boolean
     self?: boolean
+    source?: "voice" | "conversation" | "voice+conversation" | "microphone"
+    evidence?: string
   }>
   source: string | null
   publish_status: string | null
@@ -43,9 +45,12 @@ export interface JobDetail {
   tracks: Record<string, string>
   learned_voices: string[]
   publish_title: string | null
+  languages: Record<string, number>
   notes_context: string | null
   notes_edited: boolean
   name_suggestions: Record<string, string>
+  note_format: string | null
+  note_format_override: string | null
 }
 
 export interface AppConfig {
@@ -104,14 +109,28 @@ export interface NotesResult {
   formatted_notes: string
   name_suggestions: Record<string, string>
   notes_edited: boolean
+  note_format: string | null
 }
 
-export function reformatJob(id: string, context?: string) {
+export function reformatJob(id: string, context?: string, noteFormat?: string) {
+  const body: Record<string, string> = {}
+  if (context !== undefined) body.context = context
+  if (noteFormat !== undefined) body.note_format = noteFormat
   return apiFetch<NotesResult>(`/jobs/${id}/reformat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(context === undefined ? {} : { context }),
+    body: JSON.stringify(body),
   })
+}
+
+export interface NoteFormatOption {
+  key: string
+  label: string
+  when: string
+}
+
+export function getNoteFormats() {
+  return apiFetch<{ formats: NoteFormatOption[] }>("/note-formats")
 }
 
 export function saveNotes(id: string, formattedNotes: string) {

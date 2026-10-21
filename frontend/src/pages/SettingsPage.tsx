@@ -8,6 +8,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { usePolling } from "@/hooks/usePolling"
 import { LocalRecorderCard } from "@/components/LocalRecorderCard"
 import { ConfluenceSettingsCard } from "@/components/ConfluenceSettingsCard"
+import { TranscriptionSettingsCard } from "@/components/TranscriptionSettingsCard"
+import { KnowledgeSettingsCard } from "@/components/KnowledgeSettingsCard"
 import { Toggle } from "@/components/Toggle"
 import {
   getSettings,
@@ -136,6 +138,18 @@ export function SettingsPage() {
         onChange={(v) => update("local_recorder", v)}
         myName={settings.my_name}
         onMyNameChange={(v) => update("my_name", v)}
+      />
+
+      <TranscriptionSettingsCard
+        settings={settings.transcription}
+        onChange={(v) => update("transcription", v)}
+      />
+
+      <KnowledgeSettingsCard
+        path={settings.knowledge.path}
+        lookups={settings.knowledge.lookups}
+        savedPath={saved?.knowledge.path ?? ""}
+        onChange={(v) => update("knowledge", v)}
       />
 
       <ConfluenceSettingsCard

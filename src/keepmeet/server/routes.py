@@ -225,6 +225,37 @@ def recorder_stop():
     return {"ok": True, "job_id": job_id}
 
 
+@router.get("/note-formats")
+def get_note_formats():
+    from ..note_formats import options
+
+    return {"formats": options()}
+
+
+@router.get("/knowledge/status")
+def knowledge_status():
+    from .. import knowledge
+
+    path = load_settings(load_config())["knowledge"]["path"]
+    if not path:
+        return {"configured": False, "loaded": False}
+    kb = knowledge.load(path)
+    if kb is None:
+        return {"configured": True, "loaded": False, "error": "No glossary.md or index.md found in that folder"}
+    return {"configured": True, "loaded": True, "digest_chars": len(kb.digest), "terms": len(kb.terms)}
+
+
+@router.get("/transcription/suggested-terms")
+def get_suggested_terms():
+    from ..transcriber import suggested_terms
+
+    try:
+        return {"terms": suggested_terms(load_config())}
+    except Exception as e:
+        logger.exception("Could not collect suggested terms")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/settings", response_model=Settings)
 def get_settings():
     try:
@@ -318,6 +349,12 @@ def reformat_job(job_id: str, body: ReformatRequest | None = None):
 
     if body is not None and body.context is not None:
         job = update_job(job_id, notes_context=body.context.strip())
+    if body is not None and body.note_format is not None:
+        from ..note_formats import AUTO, FORMATS
+
+        if body.note_format not in FORMATS and body.note_format != AUTO:
+            raise HTTPException(status_code=400, detail=f"Unknown note format {body.note_format}")
+        job = update_job(job_id, note_format_override=None if body.note_format == AUTO else body.note_format)
     update_job(job_id, status="reformatting")
     try:
         notes_update = build_notes(job)

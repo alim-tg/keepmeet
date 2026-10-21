@@ -8,7 +8,7 @@ from collections import Counter
 from ctypes import wintypes
 from pathlib import Path
 
-from .transcriber import _get_ffmpeg
+from .asr.audio import ffmpeg_path
 
 logger = logging.getLogger(__name__)
 
@@ -259,7 +259,7 @@ def mix_tracks(paths: list[Path], dest: Path) -> dict[str, Path]:
     if not tracks:
         raise RecorderError("No audio was captured")
 
-    ffmpeg = _get_ffmpeg()
+    ffmpeg = ffmpeg_path()
     cmd = [ffmpeg, "-y", "-loglevel", "error"]
     for t in tracks:
         cmd += ["-i", str(t)]

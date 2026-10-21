@@ -6,6 +6,7 @@ from pathlib import Path
 SETTINGS_PATH = Path("data") / "settings.json"
 
 PUBLISH_MODES = ("manual", "auto", "auto_if_matched")
+TRANSCRIPTION_MODELS = ("whisper-large-v3", "whisper-large-v3-turbo")
 SOURCES = ("onedrive", "meeting_chats", "shared_with_me")
 
 DEFAULTS = {
@@ -23,6 +24,15 @@ DEFAULTS = {
     "my_name": "",
     "confluence": {
         "target_url": "",
+    },
+    "knowledge": {
+        "path": "",
+        "lookups": True,
+    },
+    "transcription": {
+        "model": "whisper-large-v3",
+        "languages": ["ru", "en"],
+        "vocabulary": "",
     },
     "local_recorder": {
         "enabled": False,
@@ -74,6 +84,14 @@ def _validate(settings: dict) -> dict:
     settings["sources"] = {k: bool(settings["sources"].get(k)) for k in SOURCES}
     settings["my_name"] = str(settings["my_name"] or "").strip()
     settings["confluence"]["target_url"] = str(settings["confluence"]["target_url"] or "").strip()
+    settings["knowledge"]["path"] = str(settings["knowledge"]["path"] or "").strip()
+    settings["knowledge"]["lookups"] = bool(settings["knowledge"]["lookups"])
+    transcription = settings["transcription"]
+    if transcription["model"] not in TRANSCRIPTION_MODELS:
+        raise ValueError(f"transcription.model must be one of {', '.join(TRANSCRIPTION_MODELS)}")
+    languages = [str(lang).strip().lower() for lang in transcription["languages"] or [] if str(lang).strip()]
+    transcription["languages"] = list(dict.fromkeys(languages)) or ["ru", "en"]
+    transcription["vocabulary"] = str(transcription["vocabulary"] or "").strip()
     recorder = settings["local_recorder"]
     recorder["enabled"] = bool(recorder["enabled"])
     recorder["include_mic"] = bool(recorder["include_mic"])

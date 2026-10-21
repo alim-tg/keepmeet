@@ -93,7 +93,13 @@ export function SpeakerEditor({ job, onSave, onReformat, saving, reformatting }:
                 </Badge>
               ) : match && (
                 <Badge variant="secondary" className="text-xs gap-1">
-                  {match.name} - {Math.round(match.confidence * 100)}%{match.merged ? " · merged" : ""}
+                  {match.name}
+                  {match.source === "conversation"
+                    ? " · from conversation"
+                    : match.source === "voice+conversation"
+                      ? ` · voice ${Math.round((match.confidence ?? 0) * 100)}% + conversation`
+                      : ` · voice ${Math.round((match.confidence ?? 0) * 100)}%`}
+                  {match.merged ? " · merged" : ""}
                 </Badge>
               )}
               {match?.role && (
@@ -119,6 +125,9 @@ export function SpeakerEditor({ job, onSave, onReformat, saving, reformatting }:
             )}
             {match?.description && (
               <p className="text-xs text-muted-foreground/80">{match.description}</p>
+            )}
+            {match?.evidence && (
+              <p className="text-xs text-muted-foreground/80">Why: {match.evidence}</p>
             )}
             {samples[spk] && (
               <p className="text-xs text-muted-foreground/60 italic leading-relaxed">"{samples[spk]}"</p>
